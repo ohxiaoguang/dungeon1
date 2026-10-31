@@ -90,3 +90,13 @@ An additional Comet test with the local MOD overlay and **40** shards used a
 balance remained 40. Thus the refusal was observed with enough funds, not inferred
 from an already unaffordable item. Native mouse clicks also opened the wagon and
 switched between its ordinary and Comet pages in this QA run.
+
+### Native MOD management check
+
+The local external overlay was then exercised through the game's blue MOD button
+on the profile page. The actual management panel displayed four distinct enabled
+entries and previews: the 1.3.0 trinket-box layout fix, Inventory Expansion Lite,
+Curio Hints and Stacking Inventory. This verifies MOD discovery/metadata and the
+management UI in the new Host. The Comet grid was also rendered with this overlay
+active. It is not a claim that every feature of every MOD or every possible
+combination has been tested. All MOD resources/screenshots remain private.

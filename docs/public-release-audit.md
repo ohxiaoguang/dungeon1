@@ -96,3 +96,11 @@ maintained documentation local links were checked; historical code expressions
 inside markdown tables are not treated as file links. No public CI or binary
 release is configured. Final history is rechecked after the root commit and
 before the normal main push.
+
+The independent root commit is `7545d55c5230c8759b34a6e2c44084caea5e0c5e`.
+Its postcommit scan checked 1,062 indexed files and 1,232 reachable Git objects,
+with only refs/heads/main and zero findings. No old repository history is present.
+The initial main push completed normally after retrying an HTTP 400 transport
+failure with HTTP/1.1 and a per-command post buffer (no force push). A subsequent
+documentation-only commit records the final MOD management test; it does not
+change the application binaries or import additional source/content.
