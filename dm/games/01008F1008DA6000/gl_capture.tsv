@@ -1,0 +1,46 @@
+# GLSL programs Darkest Dungeon compiles while it boots and plays its opening route, from two Mac host runs (DM_GL_CAPTURE):
+#   v0      (1.0.0, modules 0d07c246…): 34 stages — the boot and prologue route the 1.0.0 App was made from;
+#   v393216 (1.3.0, modules ff2bf225…): 37 stages — same route on the update, recorded in docs/research/darkest-dungeon-1.3.0-host-run.md.
+# <key>.vert / <key>.frag, key = sha256(GLSL)[:16]. They are the same shaders the RomFS files and main's embedded strings give gl_shaders.py,
+# so this table is evidence of what the game actually asks for, not a second source of shaders: it lists the keys each route looked up.
+# The union is what shader_versions (v0 v393216) makes the library hold: 38 stages, the two routes sharing 33. 1.3.0 changes character.glsl's
+# fragment section (cd007d35ba9501d5, v0 only -> 0605d19f3c7905fd), drops nothing else and adds character_stealth (033dd9a2d57447ba) plus
+# 0254334078bfa6b2 and 99acd6af258ba2c4. tools/nxrom/gl_library.py checks both the table and the Metal functions the library really holds.
+00a0250332955a7c.frag
+01cad875c166c76b.vert
+0254334078bfa6b2.vert
+033dd9a2d57447ba.frag
+0605d19f3c7905fd.frag
+08a7344fabb1661e.frag
+18187f4134f3e25c.vert
+20e4b537f4ab995c.frag
+24208ce7d0e773fa.vert
+29271285a9e91109.frag
+4adce0ce9b64a02a.frag
+4dc9fbe8dd7587a7.vert
+52854ba5d1f35c6d.frag
+599d606c6a8984e9.vert
+5c0ee9d581cb9083.vert
+6cb4f49a4e514b9e.vert
+75db5d182f4fc967.frag
+7d6c8b4ddeb44429.frag
+813fa571f5c692d7.frag
+9531a3c31f65a164.vert
+969bb788c94f846c.frag
+99acd6af258ba2c4.frag
+9d9ec80b59c2a571.vert
+a5e8de2ff656f49d.frag
+a73f6ce7c40cb36f.frag
+af32535b4c61005c.vert
+b9c453fc392e6c5d.vert
+c3fa1bcb66f47d51.vert
+cd007d35ba9501d5.frag
+cf7004a087c57345.vert
+dbec4b532b61ed9e.frag
+de2ca7ae047546b5.vert
+dfa8bfebe9295599.frag
+e2be5833fc2ff3fb.frag
+e2f7b38e81e2a1e6.vert
+e4f4fd7f51391435.frag
+f6f5fa926b249d52.frag
+ff77ad72be8ce7e5.frag

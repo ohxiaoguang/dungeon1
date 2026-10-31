@@ -1,0 +1,37 @@
+[
+  {
+    "material": "Humanizer-MIT.txt",
+    "source_url": "https://raw.githubusercontent.com/Humanizr/Humanizer/90f0cb1d7427635f38b46350bb1dc5fca2164f2d/license.txt",
+    "sha256": "e24ec7f2eea5c5f4b3e2c08308109ba99b49b4b56ea7ff0e0a178f2bdd4bbce8",
+    "original_source_match": true
+  },
+  {
+    "material": "RecyclableMemoryStream-MIT.txt",
+    "source_url": "https://raw.githubusercontent.com/Microsoft/Microsoft.IO.RecyclableMemoryStream/e29a28387da9018fa9605a1dcb3f7a0435aa9974/LICENSE",
+    "sha256": "7d6aa3550cf7aeb25ef542f616d8ead585633e3b607c65e1db4aa804e4971a91",
+    "original_source_match": true
+  },
+  {
+    "material": "MsgPack-Apache-2.0.txt",
+    "source_url": "https://raw.githubusercontent.com/msgpack/msgpack-cli/1.0.1/LICENSE.txt",
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "original_source_match": true,
+    "notice_review": "Touchline 27 fixed-tag review found no separate upstream NOTICE; DLL unmodified"
+  },
+  {
+    "material": "Dotnet-AppHost-LICENSE.txt",
+    "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.osx-arm64/10.0.13/microsoft.netcore.app.host.osx-arm64.10.0.13.nupkg",
+    "package_sha256": "629ee6c59be0d9746643afe6007f4d2a5a8435613931079c5759d103ff037288",
+    "member": "LICENSE.TXT",
+    "sha256": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310",
+    "original_source_match": true
+  },
+  {
+    "material": "Dotnet-AppHost-THIRD-PARTY-NOTICES.txt",
+    "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.osx-arm64/10.0.13/microsoft.netcore.app.host.osx-arm64.10.0.13.nupkg",
+    "package_sha256": "629ee6c59be0d9746643afe6007f4d2a5a8435613931079c5759d103ff037288",
+    "member": "THIRD-PARTY-NOTICES.TXT",
+    "sha256": "66f1d4e44973185519bb4aa8a9718eb22fc7af2cc532e3ae9cfc4c127ee7fc54",
+    "original_source_match": true
+  }
+]

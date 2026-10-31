@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "reviewed": "2026-10-26",
+  "policy": "Only verified Title-ID-associated aliases are displayed. Regional wording is preserved unless an official Simplified Chinese source is available. Names imply no game-language support. No runtime networking.",
+  "sources": {
+    "titledb-hk": {
+      "url": "https://github.com/blawar/titledb/blob/49db6611a8cb0278082cc2544e304fe4ae51e552/HK.zh.json",
+      "revision": "49db6611a8cb0278082cc2544e304fe4ae51e552",
+      "sha256": "76b92e04bc53c0beb490eed9f5ab30916747d408c3a4b9b3c1d893e7f763035f",
+      "license": "MIT (Blake Warner, 2019)"
+    },
+    "titledb-cn": {
+      "url": "https://github.com/blawar/titledb/blob/master/CN.zh.json",
+      "blob": "cae188dbb720fc164909f644a0967533ad55b8c4",
+      "sha256": "5373cd4505a1572179fcf6cf4cf37d2ab52ee1cd2be11bd605d2a1b4aa582c26",
+      "license": "MIT (Blake Warner, 2019)"
+    },
+    "nintendo-wonder-sc": {
+      "url": "https://www.nintendo.com/zh-hans-hk/character/mario/index.html",
+      "note": "Official Mario portal names the original Switch Wonder game; exact Title ID remains linked through the TitleDB base-product record."
+    },
+    "bandai-switch-press": {
+      "url": "https://gamelife.tw/switch/archive-6511/",
+      "note": "2018-04-18 publisher announcement reproduced by Game LIFE, explicitly naming the Switch edition DARK SOULS: REMASTERED / 黑暗靈魂 REMASTERED; paired with exact TitleDB ID and NSUID."
+    }
+  },
+  "names": {
+    "01008F1008DA6000": {
+      "english": "Darkest Dungeon",
+      "status": "missing",
+      "zh_hans": null,
+      "checked": "2026-10-27",
+      "source_ids": [
+        "titledb-cn",
+        "titledb-hk"
+      ],
+      "note": "Neither reviewed TitleDB snapshot lists this Title ID, and the game's own control data declares no Chinese language (en-US fr de es it ru), so there is no eShop Chinese title to adopt. Preserve the English profile name rather than translate it."
+    }
+  }
+}

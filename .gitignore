@@ -1,0 +1,81 @@
+# Build outputs (Xcode derived data, produced by the scripts under dm/ios)
+.iosdd/
+.iosdd_mac/
+.iosdd_*/
+.DS_Store
+.gui-build/
+# Local agent notes for this workspace (project skills under .workbuddy/skills/ stay tracked)
+.workbuddy/memory/
+gui/.build/
+gui/.swiftpm/
+__pycache__/
+# Made from each shader build's Mac outputs (c1_guard.py, cb_extent.py; the NSP script makes them), not committed
+dm/games/*/c1_full.tsv
+dm/games/*/cb_extent.tsv
+# The chain version header is global (dm/gfx/nvn/dmsh_chain.h), never per game
+dm/games/*/dmsh_chain.h
+
+
+# Private game inputs, local keys, saves and generated diagnostics
+*.nsp
+*.xci
+*.nsz
+*.ncz
+*.nca
+*.keys
+*.keys.*
+*.key
+RomFS/
+romfs/
+ExeFS/
+exefs/
+save/
+saves/
+*_work/
+*-work/
+*_build/
+*_survey/
+.venv/
+.env
+.env.*
+*.metallib
+*.air
+*.dSYM/
+*.patched.bin
+*.raw
+*.pcm
+*.log
+# Keep converted game shader source and dumps out of Git. Existing authored
+# renderer shaders remain tracked; add new authored MSL only after review.
+*_b.metal
+*_bv.metal
+*_bf.metal
+*_bu.metal
+*.bin
+*keys*.private.json
+gpu-dumps/
+
+# Additional private executable inputs and diagnostic containers
+*.nso
+*.nro
+*.trace
+*.gputrace
+*.capture
+*.dump
+*.memdump
+
+# Private development and distributable products (never public game artifacts)
+build/
+Release/
+private/
+*.app/
+*.ipa
+*.dylib
+*.a
+*.o
+*.pdb
+*.png
+*.jpg
+*.dds
+*.ttf
+!assets/app-icon/*.png

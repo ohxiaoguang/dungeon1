@@ -1,0 +1,6 @@
+# The ZBIC amalgamation is vendored verbatim from Atmosphere (see its header): its whitespace
+# is upstream's, so it is not reported by 'git diff --check'.
+dm/tools/zbic/zbicdeclib.inc whitespace=-trailing-space
+
+# Preserve vendored source byte identity and original upstream whitespace.
+dm/third_party/** whitespace=-trailing-space

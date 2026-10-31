@@ -1,0 +1,80 @@
+# Game profile of Darkest Dungeon (Switch, base game 1.0.0 = v0). Plays on the Mac in this source tree and builds as an iPhone/iPad
+# App from the same Profile: the GL library is translated a second time for the iPhone SDK (sh/ios/gl, -sdk iphoneos) and both
+# libraries are audited against gl_capture.tsv, which is what let the packaging GUI offer iOS as well as macOS for this profile.
+# Format: see dm/games/README.md
+# Two builds are registered: 1.0.0 (v0, SDK 3.6.0) is the audited baseline; 1.3.0 (v393216, SDK 22.2.5, modules imported through ZBIC segments) is what
+# package names now, and shader_versions v0 v393216 says the Shader tables are the union of both. 1.3.0 runs: the Mac App built from this profile boots,
+# reaches its title screen and the tutorial's first fight (docs/research/darkest-dungeon-1.3.0-mac-app.md), and the host trace is in
+# darkest-dungeon-1.3.0-host-run.md. Its GL library is the union of both versions: 48 stage sources -> 47 keys -> 48 Metal functions, a strict superset of
+# the v0-only library (46/45), adding 0605d19f3c7905fd and 033dd9a2d57447ba -- so v0 stays covered and a v0 build still audits.
+# Engine: the game's own (SDL2 + FreeImage + stb-style loaders), rendering with NVIDIA's desktop OpenGL through EGL: it names glShaderSource, so it compiles GLSL itself
+# (dm/games/profile_guess.py shader_sources: gl). v0 imports the ~95 gl* entry points directly and also asks eglGetProcAddress; v393216 imports **only** the egl*
+# functions and gets every gl* name through eglGetProcAddress (the glad pattern), which the host's GL layer already answers from its own table. subsdk1 is
+# NintendoSDK_OpenGL and is not loaded in either build; the host's GL layer (dm/gfx/gl/hle_gl.m) answers GL and EGL on Metal.
+# The shaders are .glsl files in the RomFS (shaders/, effects) plus 14 GLSL sources embedded in main as C strings: dm/gfx/tools/gl_shaders.py reads both, and the host
+# finds each compiled program by the hash of its text (key = sha256(GLSL)[:16]). v0: 18 files, 50 stage sources -> 45 keys -> 46 Metal functions; the 34 the game
+# compiles while it boots and plays the prologue are listed in gl_capture.tsv, all of them in the library. v393216: 19 files (character_stealth.glsl is new) -> 46 keys;
+# character.glsl's fragment section changed (cd007d35ba9501d5 -> 0605d19f3c7905fd) and character_stealth adds 033dd9a2d57447ba. gl_capture.tsv is the union
+# of the two runs: 38 stages (v0's 34 and 1.3.0's 37, 33 shared; 1.3.0 loses cd007d35ba9501d5 and adds 0605d19f3c7905fd, 033dd9a2d57447ba,
+# 0254334078bfa6b2 and 99acd6af258ba2c4). tools/nxrom/gl_library.py checks the table and the Metal functions the library really holds, so a library that
+# covers only one version is refused.
+
+# ---- Identity ----
+title_id	01008F1008DA6000
+program_id	01008F1008DA6000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID
+name	Darkest Dungeon
+# The bundle's display name and the artifact base name (registry.app_name).
+app_name	Dungeon1
+ipa	Dungeon1.ipa
+app_category	public.app-category.games
+# gl: the host answers main's EGL/GL calls in its GL layer (msl/gl); this is not an NVN title and never builds a chain library
+graphics_api	gl
+# glsl: the game compiles its own GLSL, so its Shader library is one metallib plus the table that names its Metal functions
+archive_format	glsl
+# handheld: the port plays by touch there (tap a room to walk, tap a hero or a skill), and the Mac front end feeds the same touch screen with the mouse (front_mac.m). Docked, the
+# touch screen is out of reach and the game is pad-only, which is not how this port is played; handheld also renders at 720p
+op_mode	handheld
+# touch: the iPhone's virtual gamepad starts in its Tap layout, every touch going to the game's touch screen; the layout button brings back 2D / 3D
+pad_layout	touch
+
+# ---- Versions ----
+# v0 is the audited baseline (rewritten modules, GL library, capture table and Mac app all made from it).
+# v393216 (1.3.0) registers the update's own modules so the profile recognizes that build: every module changed
+# (main ff2bf225, sdk b3380482, subsdk0 bd9af339; rtld/subsdk1 are the host's / not loaded). The rewrite is
+# verified for it (dm/tools/patch_nso.py: no cuts or observation gates registered for these builds; 5,013 rewrite
+# sites in main / 9,470 in subsdk0 / 17,994 in sdk, patch areas 208,272 / 380,028 / 719,744 bytes). Its GL side is covered too:
+# the library is the union of both versions (see the header), and package / shader_versions name v393216 with v0 kept in the
+# union so the keys only the base game compiles stay in the table. An iOS IPA built from this profile passes the GL IPA audit
+# (docs/research/darkest-dungeon-ios.md).
+build	v0	1.0.0	main=0d07c2465fb869fdf0944090387d1550	subsdk0=6f819dc7432d467a7c90632def177932	sdk=8ceabb1750539c3874cc9fab45cab335
+build	v393216	1.3.0	main=ff2bf22565188d11ea0981ee0e2b53ce	subsdk0=bd9af3397f38608dba3f01510fd206e8	sdk=b33804825108340e4cad9d080a636a3f
+package	v393216
+shader_versions	v0 v393216
+
+# ---- Files ----
+# load order as on Horizon: main, subsdk*, sdk. subsdk1 is NintendoSDK_OpenGL, which never runs: the GL layer answers main's EGL imports. subsdk0 is the SDL2 port's own module
+modules	main subsdk0 sdk
+romfs_marker	audio/secondary_banks/voiceover.bank
+zip_store	.05:.bank:.mp4:.png:.tga:.metallib
+
+# ---- Memory ----
+# main never sets a heap (its memory is its own 2.94 GB bss): a 1 GB heap region
+mem_reserve	0x40000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon
+sys_resource	0x0
+
+# ---- Shader split ----
+# No NVN shaders at all: only the two tables the App layout always carries stay here
+# (shader_map.tsv is the host's DM_NVN_SHMAP, pso_manifest.tsv its prewarm list; both are
+# empty for this title). A GL library has no chain version, no c1_full.tsv / cb_extent.tsv
+# and no inputs.tsv stamp, so those files are not part of this profile.
+shader_note	Darkest Dungeon has no NVN shaders: its GLSL goes through the GL layer (18 RomFS files and 14 sources in main)
+
+# Independent application identity; old application data is imported manually.
+bundle_id	com.ohxiaoguang.dungeon1

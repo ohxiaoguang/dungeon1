@@ -1,0 +1,19 @@
+# Evidence for the supported-games list. One row per Title ID; a missing row means
+# "no record", which is never shown as a success.
+#
+# Columns: title ID <TAB> build <TAB> runtime <TAB> source <TAB> note
+#   build    none | upstream-release | fork-audited
+#   runtime  none | upstream-iphone | fork-report
+#
+# Sources, and what each one actually says:
+#   upstream-iphone / upstream-release  docs/UPSTREAM-USAGE.md: the inherited upstream gallery,
+#       "All of these are tested on an iPhone and playable". It records the upstream project,
+#       not a build or a run performed by this fork.
+#   fork-audited                        docs/VALIDATION-MATRIX.md and docs/fifa23/validation.md:
+#       FIFA 23 macOS App and iOS IPA builds in both resource modes were built and byte-audited.
+#   fork-report                         docs/VALIDATION-MATRIX.md: the user reported FIFA 23 running
+#       on iOS; the report named no resource mode and no installed artifact hash.
+#   fork-report (macOS, Darkest Dungeon) docs/research/darkest-dungeon-registry-migration.md:
+#       base 1.0.0 rebuilt through registry/engine, byte audited, then its published Host
+#       ran for 45 seconds with GL draws and SDK 3 video decoding; no full content acceptance.
+01008F1008DA6000	fork-audited	fork-report	docs/research/darkest-dungeon-registry-migration.md	macOS base 1.0.0 external App built and byte-audited through registry/engine; bounded published-Host run reached GL draws/video; full gameplay, updates, DLC and iPhone unverified
