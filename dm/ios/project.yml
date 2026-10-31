@@ -12,6 +12,7 @@ targets:
     type: application
     platform: iOS
     sources:
+      - path: ${DM_SHARED_LAUNCHER_DIR}/AboutDungeon1.swift   # shared native About page
       - path: ${DM_SHARED_LAUNCHER_DIR}/LauncherSettings.swift   # settings schema and rows (macOS compiles the same file)
       - path: ${DM_SHARED_LAUNCHER_DIR}/ResourceDiscovery.swift  # game-file discovery, shared with the macOS launcher
       - path: ${DM_SHARED_LAUNCHER_DIR}/../../gui/Sources/PackagingModel/Localization.swift  # same catalog and language policy as packaging GUI

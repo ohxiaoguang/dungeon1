@@ -1,33 +1,36 @@
-# Compatibility and acceptance
+# Compatibility and acceptance levels
 
-Product baseline: Darkest Dungeon 1.3.0/v393216. Main Build ID
-`ff2bf22565188d11ea0981ee0e2b53ce`, subsdk0
-`bd9af3397f38608dba3f01510fd206e8`, SDK
-`b33804825108340e4cad9d080a636a3f`.
+Nintendo Switch baseline: Darkest Dungeon 1.3.0/v393216, title `01008F1008DA6000`.
+Main `ff2bf22565188d11ea0981ee0e2b53ce`, subsdk0 `bd9af3397f38608dba3f01510fd206e8`,
+SDK `b33804825108340e4cad9d080a636a3f`.
 
-## Inherited evidence (not new-project acceptance)
+## A–F evidence matrix
 
-The user accepted the earlier iPhone ordinary Nomad shop short-focus/hold-buy
-behavior and prior input work. The Comet change has two Mac-host iPhone-source
-runs: 20,000 to 19,975 shards and 40 to 15, one native 25-shard purchase per
-contact, named trinket in inventory, insufficient-shard refusal, move cancellation
-and ordinary-shop regression. See the historical
-[DLC record](darkest-dungeon-dlc-shop-test.md). No iPhone DLC acceptance was claimed.
+| Level / source | Confirmed | Scope limit |
+| --- | --- | --- |
+| A — current standalone IPA, user iPhone report | Installation, startup, actual use and coexistence with the old app; `com.ohxiaoguang.dungeon1` did not replace the old app | Exact device/OS/signing tool and exhaustive checklist not supplied; does not accept the subsequently added About UI |
+| B — earlier adaptation, user iPhone report | Combat/camping touch improvements, Nomad focus/hold-buy, town portraits and earlier input work | Older-build acceptance, not automatic reacceptance of all current features |
+| C — standalone Mac runtime | Bundled startup, town/save load, five DLC mounts, Mouse HID, left click/wheel, Pointer Bridge Tooltip, roster hold and MOD management | Specific scenes, not every MOD combination or full playthrough |
+| D — Mac Host simulated iPhone contacts | Native Nomad/Comet purchases, exact gold/Shards debit, stock/inventory change, insufficient balance, move cancellation and save persistence | Real game transactions on Mac, not physical iPhone transactions |
+| E — automation | Complete Host suite (touch 154/0, Gesture 59/0), NSO/FILTERS/OBS 81 passed, GL 6 passed, retained packaging/platform 28 passed at initialization | Not device UI acceptance; this round's About checks/builds are separate |
+| F — incomplete coverage | Explicitly tracked, not counted as passed | Full DLC campaigns/mechanics, every MOD combination, long sessions, all cancel/multitouch/focus/refresh/close boundaries, separate iPad run and new About-page device UI |
 
-## New standalone build evidence
+A is the user's report recorded in this maintenance round (2026-10-31), covering
+the prior standalone lantern delivery. It does not identify the new About-enabled
+build as installed. Earlier device acceptance B and Mac/automation C–E stay distinct.
+Old iOS identity: `org.nxnative.01008f1008da6000`; standalone identity:
+`com.ohxiaoguang.dungeon1`. Coexistence was confirmed; no automatic save migration
+was claimed. Back up and import whole saves as described in [user guide](user-guide.md).
 
-The split's compiled/source and live verification results are appended below after
-execution; inherited results above do not establish the new package's behavior.
-Private logs/screenshots stay outside this repository.
+## Focused checks still open
 
-## Device checklist still open
-
-Sign/install the new IPA, import a **copy** of a backed-up save, and verify skill,
-camping, roster, ordinary shop and Comet behavior. Confirm one debit/one inventory
-addition per qualifying contact; short tap never buys; insufficient funds stay
-refused. Exercise multi-touch, focus loss, changing rows, refresh, closing the shop
-while held and controller takeover. Check save persistence and MOD layout on the
-actual device. No new iPhone/iPad run is claimed by this initialization.
+Confirm the new About page on iPhone and independently on iPad: icon/version,
+English/Chinese, scrolling, links and Done. Recheck individual current-build
+skill/shop/roster interactions and multi-touch, focus loss, controller takeover,
+changing/refreshing/closing a held target as needed. These are focused remaining
+items; overall standalone iPhone installation/start/coexistence is already accepted.
+See [DLC evidence](dlc.md). Dated historical reports retain their original results;
+this matrix supersedes broad historical pending labels for present-day status.
 
 ## Standalone execution results (2026-10-31)
 
@@ -60,10 +63,12 @@ actual device. No new iPhone/iPad run is claimed by this initialization.
 - Final IPA: Dungeon1 / com.ohxiaoguang.dungeon1 / 1.3.0, bundled directory mode,
   13,367 entries, five DLC, touch policy default on, required shop FILTER/OBS
   tables present. No console keys, NSP/XCI, Mac dylib or code-signature folder.
-  It is unsigned and has not been installed on a device.
+  It was unsigned at delivery; the user later signed/installed and started the
+  standalone app on iPhone (level A above).
 - Both final local artifacts use the supplied 1024-pixel lantern icon. The Mac
   artifact passes deep/strict ad-hoc signature verification; no Developer ID
-  signing or notarization is claimed. The icon images remain private inputs.
+  signing or notarization is claimed. The exact lantern PNG is now the published
+  official default, with explicit user project-use permission.
 
 ### Remaining live coverage limits
 
@@ -80,7 +85,7 @@ The external local MOD overlay was mounted read-only in this run. Full MOD
 1099001958 layout acceptance and every MOD combination remain unclaimed.
 Movement cancellation, second-finger and close-while-held protections passed unit
 tests; full new-device lifecycle acceptance remains open. Full playthrough, every
-MOD combination and new-iPhone execution are not claimed.
+MOD combination and exhaustive current-iPhone interaction acceptance are not claimed.
 
 The native roster hold was also verified with iPhone-source input in the
 standalone Host before the physical-mouse run, with original hero details shown.
@@ -100,3 +105,9 @@ Curio Hints and Stacking Inventory. This verifies MOD discovery/metadata and the
 management UI in the new Host. The Comet grid was also rendered with this overlay
 active. It is not a claim that every feature of every MOD or every possible
 combination has been tested. All MOD resources/screenshots remain private.
+
+## Formal About/icon maintenance checks
+
+See [About validation](about-validation.md) for the subsequent Mac/iOS builds,
+28 packaging tests, Mac bilingual UI/link/close checks and exact bundled icon
+verification. These are focused launcher checks, not a new full game regression.

@@ -11,4 +11,17 @@
 - Add Dungeon1 identity, original icon and independent Mac/iOS build wrappers.
 - Separate public source/license material from private bundled App/IPA products;
   include bilingual documentation, provenance and release-audit tooling.
-- New Dungeon1 IPA device acceptance remains pending.
+- At initialization, new-device acceptance was pending; the user confirmation
+  below supersedes that historical status.
+
+## Formal launcher and documentation update — 2026-10-31
+
+- Record user-confirmed standalone iPhone installation, startup and coexistence;
+  distinguish older interaction tests, Mac simulated input, GUI and automation.
+- Clarify Nintendo Switch 1.3.0 inputs and all five DLC mappings/evidence limits.
+- Publish the exact user-selected GPT lantern with project-use permission; default
+  both platforms to it while retaining --icon.
+- Add native shared English/Chinese About sheets, metadata version/build, working
+  project/source/license links, scrolling and system appearance.
+- Keep Bundle ID, version guards and all game input/DLC/MOD/save logic unchanged.
+- The new About page's iPhone/iPad device UI remains a focused acceptance item.

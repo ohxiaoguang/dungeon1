@@ -314,10 +314,11 @@ private struct MacLauncher: View {
     @ObservedObject var resources: Resources
     @EnvironmentObject private var language: LanguagePreferences
     private func l(_ text: String) -> String { GUIText.launcher(text, language: language.language) }
+    @State private var about = false
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 18) {
-                Image(systemName: "gamecontroller.fill").font(.system(size: 64)).foregroundStyle(.tint)
+                DungeonProjectIcon().frame(width: 96, height: 96)
                 Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Dungeon1").font(.title.bold()).multilineTextAlignment(.center)
                 Text(l("Version " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))).foregroundStyle(.secondary)
                 Button { resources.play(settings) } label: {
@@ -417,8 +418,14 @@ private struct MacLauncher: View {
                         Text(l(problem)).font(.caption).foregroundStyle(.red)
                     }
                 }
+                Section {
+                    Button { about = true } label: {
+                        Label(language.language.resolved == .simplifiedChinese ? "关于 Dungeon1" : "About Dungeon1", systemImage: "info.circle")
+                    }.accessibilityIdentifier("dungeon1.about.open")
+                }
             }.formStyle(.grouped)
         }.frame(minWidth: 900, minHeight: 660)
+        .sheet(isPresented: $about) { AboutDungeon1View().environmentObject(language) }
     }
     private func row(_ title: String, _ file: ResourceFile?) -> some View {
         HStack(spacing: 12) {

@@ -26,7 +26,8 @@ def main():
         if any(pattern.search(data) for pattern in SECRETS): issues.append((name,'credential pattern'))
         binary=b'\0' in data[:4096] or p.suffix.lower() in ('.dll','.exe','.png')
         if binary:
-            icon=name=='assets/app-icon/dungeon1.png' and data.startswith(b'\x89PNG')
+            icon_hashes={'assets/app-icon/dungeon1.png':'4106f8aa6bb1ff1f568eae71da7d4f40243892039b968368b8dc1373cd4efb66', 'assets/app-icon/dungeon1-lantern.png':'f0e63900db55018238ff2fef2493c3b825364f7f3a4d7cb670b2b9cdb8725ca7'}
+            icon=icon_hashes.get(name)==identity[1] and data.startswith(b'\x89PNG')
             locked=known.get(name)==identity[1]
             if not (icon or locked): issues.append((name,'unreviewed binary'))
     for record in git('ls-files','--stage','-z').split(b'\0'):

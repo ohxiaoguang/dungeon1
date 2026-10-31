@@ -14,7 +14,7 @@ line. The Comet commit adds the distinct verified purchase callable. Independent
 Git history does not make these components original Dungeon1 work.
 
 Dungeon1 adds single-game registration/build entry points, a dedicated app identity,
-original geometric icon, default settings, docs and public-file audit. Other profiles,
+the initial geometric fallback, default settings, docs and public-file audit. Other profiles,
 product docs and game-memory frame-limit writes were omitted. Shared HLE, codecs,
 GL/NVN/Vulkan infrastructure, containers, rewriting, fonts generator and shader
 translation tools remain where needed by the build graph. SDK registry now contains
@@ -39,3 +39,8 @@ from producer commit `674c2e141cf87917271858c455657aa8637f22d0` in the maintaine
 repository and independently hashed: zero mismatches. See
 [producer verification](producer-verification.json). No producer Git objects were
 imported into Dungeon1 history.
+
+The formal default lantern is a user-selected GPT-generated image, explicitly
+authorized for public Dungeon1 use. [Icon usage](../assets/app-icon/USAGE.md) records
+its exact hash, scope and terms review. The shared bilingual About is presentation
+code inspired by the reference's sheet pattern, without FIFA branding/content.

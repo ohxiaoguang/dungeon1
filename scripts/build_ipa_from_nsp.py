@@ -1950,8 +1950,8 @@ def main(args=None):
     if resource_backend == 'nsp': say('external NSP runtime: App/IPA omits RomFS/DLC; import matching NSPs and keys on the device; initial preparation still uses extracted files')
     if prepare_xcode: ipa_env['DM_XCODE_PROJECT_DIR'] = str(project.parent)
     if app_version: ipa_env['DM_APP_VERSION'] = app_version
-    # app icon: the game icon nx_extract saved from the control data (English, icon.jpg); the packed version's first, then the base game's
-    icon = Path(env['DM_ICON']) if env.get('DM_ICON') else repo / 'assets/app-icon/dungeon1.png'
+    # App icon: committed Dungeon1 lantern; DM_ICON preserves the local override.
+    icon = Path(env['DM_ICON']) if env.get('DM_ICON') else repo / 'assets/app-icon/dungeon1-lantern.png'
     if icon: ipa_env['DM_ICON'] = str(icon); say(f'app icon: {icon}')
     else: say('[RED] no game icon in the extraction (an older extraction did not save it: delete extract/ and run again); the home-screen icon will be blank')
     env_file = args.env_file or DM_ENV_FILE

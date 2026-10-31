@@ -58,7 +58,7 @@ def main():
     ap.add_argument('--prepared', type=Path, help='Private preparation root: extract/, patched_v393216/, shader/')
     ap.add_argument('--nsp-dir', type=Path, help='Bootstrap/rewrite from privately supplied base/update containers')
     ap.add_argument('--keys', type=Path)
-    ap.add_argument('--icon', type=Path, help='Private user-supplied PNG; never copied into source')
+    ap.add_argument('--icon', type=Path, help='Override the official lantern icon with a local PNG')
     ap.add_argument('--font-python', default=os.environ.get('FONT_PY',sys.executable), help='Python with fonttools')
     ap.add_argument('--work', type=Path, required=True, help='Private build/cache directory on a volume with free space')
     ap.add_argument('--out', type=Path, required=True, help='New Dungeon1.app or Dungeon1.ipa path')
@@ -72,11 +72,11 @@ def main():
                PYTHONDONTWRITEBYTECODE='1', CLANG_MODULE_CACHE_PATH=str(a.work/'clang-cache'),
                SWIFT_MODULECACHE_PATH=str(a.work/'swift-cache'), TMPDIR=str(a.work/'tmp'))
     Path(env['TMPDIR']).mkdir(exist_ok=True)
-    # Original artwork is rendered from source; no game artwork is used.
-    icon = a.icon.resolve() if a.icon else ROOT / 'assets/app-icon/dungeon1.png'
+    # The maintainer-authorized lantern PNG is the default on both platforms.
+    icon = a.icon.resolve() if a.icon else ROOT / 'assets/app-icon/dungeon1-lantern.png'
     if a.icon and not icon.is_file(): ap.error('Missing --icon image')
-    if not icon.exists():
-        run(['xcrun','swift','-module-cache-path', a.work/'swift-cache', ROOT/'assets/app-icon/make_icon.swift', icon], env)
+    if not icon.exists(): ap.error('Missing official icon; restore assets/app-icon/dungeon1-lantern.png')
+    env['DM_ICON'] = str(icon)
     if a.nsp_dir:
         if a.resource_backend != 'directory': ap.error('Bootstrap currently prepares bundled directory mode; use --prepared for external mode')
         keys = a.keys or a.nsp_dir/'prod.keys'

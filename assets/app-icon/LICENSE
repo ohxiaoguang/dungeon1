@@ -1,3 +1,8 @@
-Original geometric doorway and numeral artwork, created for Dungeon1.
+Dungeon1 icon resource notices
+
+Official AI-generated lantern: dungeon1-lantern.png
+See USAGE.md for source, user authorization and project-use scope. The code MIT
+license does not automatically apply to this image.
+
+Earlier geometric fallback: dungeon1.png and make_icon.swift
 Copyright (c) 2026 ohxiaoguang contributors. Licensed under the root MIT LICENSE.
-No Darkest Dungeon or Nintendo image is used.

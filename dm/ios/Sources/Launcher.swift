@@ -108,15 +108,14 @@ private struct LauncherView: View {
     let play: () -> Void
     @StateObject private var language = LanguagePreferences(key: "launcher.interface-language.v1")
     private func l(_ text: String) -> String { GUIText.launcher(text, language: language.language) }
+    @State private var about = false
     @State private var memory = os_proc_available_memory()
     @StateObject private var resources = ResourceScan()
 
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 16) {
-                if let icon = appIcon() {
-                    Image(uiImage: icon).resizable().frame(width: 96, height: 96).clipShape(RoundedRectangle(cornerRadius: 22))
-                }
+                DungeonProjectIcon().frame(width: 96, height: 96)
                 Text(l((info("CFBundleDisplayName") as? String) ?? "Game")).font(.title.weight(.bold)).multilineTextAlignment(.center)
                 Text(l("Version \((info("CFBundleShortVersionString") as? String) ?? "")")).font(.callout).foregroundStyle(.secondary)
                 playButton
@@ -174,6 +173,11 @@ private struct LauncherView: View {
                 }
                 ForEach(m.settings) { SettingRow(s: $0, m: m) }
                 Section {
+                    Button { about = true } label: {
+                        Label(language.language.resolved == .simplifiedChinese ? "关于 Dungeon1" : "About Dungeon1", systemImage: "info.circle")
+                    }.accessibilityIdentifier("dungeon1.about.open")
+                }
+                Section {
                     HStack {
                         Text(l("Memory available"))
                         Spacer()
@@ -185,7 +189,7 @@ private struct LauncherView: View {
         }
         .environmentObject(language)
         .environment(\.locale, Locale(identifier: language.language.resolved.rawValue))
-        .preferredColorScheme(.dark)
+        .sheet(isPresented: $about) { AboutDungeon1View().environmentObject(language) }
         .task {
             if resources.external { resources.rescan() }
             while !Task.isCancelled {

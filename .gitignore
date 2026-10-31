@@ -78,4 +78,5 @@ private/
 *.jpg
 *.dds
 *.ttf
-!assets/app-icon/*.png
+!assets/app-icon/dungeon1.png
+!assets/app-icon/dungeon1-lantern.png

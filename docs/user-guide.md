@@ -68,4 +68,21 @@ Check launcher errors and `log.txt`; preserve logs privately. Wrong resources,
 Build IDs, stale rewritten modules and missing shaders require correct preparation.
 Do not bypass validation. Confirm the experimental policy switch when a long press
 uses the game's original behavior. See [compatibility](compatibility.md) for what
-has actually been tested, including the pending new-IPA device checklist.
+has actually been tested, including accepted standalone iPhone installation/start/coexistence and focused
+remaining checks.
+
+## About Dungeon1 / 关于 Dungeon1
+
+Choose About Dungeon1 in launcher settings (关于 Dungeon1 in Chinese). Mac uses a
+scrollable sheet; iPhone/iPad use a scrollable navigation sheet. The icon matches
+the application source without another rounded mask. Version/build come from
+installed metadata. Done / 完成 returns to the launcher without changing resource,
+save or input settings. Choose English or 简体中文 in Interface language; the page
+follows system appearance. GitHub, nxnative, license and DLC-detail links work.
+
+The user confirmed standalone iPhone installation/start/coexistence for the prior
+lantern build. The subsequently added About UI still needs physical phone/tablet
+confirmation; compiling it is not that confirmation. No separate iPad report exists.
+See [A–F evidence](compatibility.md). This is the Nintendo Switch 1.3.0 adaptation,
+not a PC/Steam resource importer or official iOS release. Matching owned Switch
+DLC must be prepared as described in [DLC support](dlc.md).

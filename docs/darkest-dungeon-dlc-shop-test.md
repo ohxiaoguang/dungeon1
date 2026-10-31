@@ -1,5 +1,7 @@
 > Historical evidence imported from the maintainer snapshot. These are old-project
-> runs, not new Dungeon1 device acceptance. See [current compatibility](compatibility.md).
+> runs, not new Dungeon1 device acceptance. Current standalone iPhone installation,
+> startup and coexistence are user-confirmed; see [current compatibility](compatibility.md).
+> Pending labels below retain their historical dates/scope, not current overall status.
 
 # Darkest Dungeon 1.3.0 — DLC (Comet) supply page: save fixture, policy and Mac-host verification
 

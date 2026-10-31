@@ -2,10 +2,11 @@
 
 Dungeon1 builds on [nxnative](https://github.com/seedds/nxnative) and retains
 its original seedds MIT notice in [LICENSE](LICENSE). Kernel/service emulation,
-NVN/Metal, translation and rewriting retain their original authorship. FIFA 23
-adaptations, resource integration and packaging also include work developed by
-the maintainer on that engine and now maintained in this independent project;
-these additions are not all credited to the original official upstream.
+NVN/Metal, translation and rewriting retain their original authorship. Darkest
+Dungeon adaptations, resource integration and packaging include work from the
+maintainer’s nxnative fork, now maintained in Dungeon1. Touchline 23/27 supplied
+engineering references; their game-specific adaptations are not Dungeon1 features.
+These additions are not all credited to the original upstream.
 [UPSTREAM.md](docs/UPSTREAM.md) records the accurate inheritance and evidence limits.
 The root MIT grant does not replace other components' terms or grant rights to
 game content, keys, firmware or third-party assets.
@@ -68,3 +69,11 @@ products stay local and ignored.
 
 Dungeon1 is an independent community project with no official affiliation or
 endorsement from Red Hook Studios, Nintendo, Apple or their affiliates.
+
+## Dungeon1 artwork
+
+The official lantern is user-selected GPT-generated artwork with explicit public
+Dungeon1-use permission. See [its separate notice](assets/app-icon/USAGE.md). Code
+MIT does not automatically apply to it or other images. The geometric fallback
+keeps its documented MIT grant. No original game logo/character or MOD art is
+supplied as project artwork.

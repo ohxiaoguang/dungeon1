@@ -221,6 +221,7 @@ def package(a, launcher=None):
         if p.name.endswith(('.fixups.tsv', '.gates.tsv', '.cuts.tsv', '.obs.tsv')): copy(p, res/'program'/p.name)
     for name in tables: copy(a.profile/name, res/'profile'/name)
     copy(a.settings, res/'profile/launcher.json')
+    copy(Path(os.environ.get('DM_ICON', str(REPO/'assets/app-icon/dungeon1-lantern.png'))), res/'project-icon.png')
     (res/'profile/prepared_builds.tsv').write_text(builds)
     if backend == 'directory':
         # The whole game RomFS, as the iOS build bundles it: the host reads DM_ROMFS from here.

@@ -88,7 +88,19 @@ sources/targets or translation inputs have changed. Do not substitute a Mac meta
 for the iPhone library. Restore tools from their recorded sources with original
 licenses; never replace the locked translator merely to tidy the repository.
 
-Local acceptance artifacts use a maintainer-supplied lantern image via `--icon`.
-The two supplied PNGs remain private inputs; their redistribution license was not
-provided. Public source keeps the original geometric fallback artwork/generator.
-Passing `--icon /private/icon.png` applies the selected image to both Mac and iOS.
+## Official icon and shared About
+
+Both wrappers default to committed `assets/app-icon/dungeon1-lantern.png`, an opaque
+1024 × 1024 PNG. No private icon path is needed after cloning. --icon remains a
+local override. Mac ICNS and iOS AppIcon use the same selected source; an unchanged
+project-icon.png is bundled for launcher/About (Mac Resources root; iOS dm/). No
+extra rounded mask is applied. See [image usage](../assets/app-icon/USAGE.md).
+
+`dm/apple/AboutDungeon1.swift` is compiled by the Mac shared-source glob and iOS
+XcodeGen list. It reads metadata version/build and only changes sheet state. This
+UI/docs update requires no shader translation or game-module rewriting. Deployment
+targets stay macOS/iOS 26.0; current local Xcode does not prove all older toolchains.
+
+Inputs must be Switch base plus matching 1.3.0 update. v0 is read for union shader
+coverage, not another accepted runtime. Exact Build IDs remain unchanged. See
+[compatibility](compatibility.md) and [DLC CNMT mapping](dlc.md).
