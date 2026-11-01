@@ -43,11 +43,16 @@ is v393216. Do not use the low-level generic tools to imply support for other ga
 ## Reusing prepared inputs
 
 A preparation root contains `extract/v0/`, `extract/v393216/`,
-`patched_v393216/`, `shader/gl/`, `shader/ios/gl/` and optional `aoc/manifest.json`.
+`patched_v393216/`, `shader/gl/`, `shader/ios/gl/` and optional DLC at
+`aoc/manifest.json` or, as the container bootstrap writes it, `aoc-<digest>/manifest.json`.
 All rewriter inputs in `build_src.sha256` must match retained sources; modules
-must have registered 1.3.0 Build IDs and required FILTER/OBS gates. Both GL libraries
-are checked against `gl_capture.tsv`. Foreign game stamp entries are ignored only
-when their profiles were removed; no retained source mismatch is ignored.
+must have registered 1.3.0 Build IDs and required FILTER/OBS gates. Each wrapper
+checks only the library it packs against `gl_capture.tsv`: Mac packages
+`shader/gl`, iOS packages `shader/ios/gl` (a Mac-only preparation stays valid for
+Mac, an iOS-only one for iOS), while a preparation carrying both is accepted by
+both. A missing library for the target is still a hard error. Foreign game stamp
+entries are ignored only when their profiles were removed; no retained source
+mismatch is ignored.
 
 ```sh
 ./scripts/build-mac.sh --prepared /private/prepared \
@@ -61,6 +66,16 @@ stamp. Keep a separate private prepared root for Dungeon1. The standalone split
 reprepared all three modules; Mac and iOS GL caches were reused after coverage
 validation. The NVN translator and shared graphics infrastructure remain available
 as build dependencies, but this game actually renders through GL, not NVN.
+
+Each wrapper builds one platform on its own from the same containers: `--target mac`
+and `--target ios` share no platform-specific shader product, and neither needs the
+other to have run. A preparation without DLC still builds the base game; when DLC is
+present, the tree is resolved (either layout), audited file by file against its
+manifest and then packaged. An ambiguous pair of trees, a tree without `manifest.json`
+or an incomplete tree stops the build instead of producing a DLC-less artifact. The
+Mac App's `Contents/Resources/aoc` and the IPA's `Payload/DmIOS.app/aoc` hold the same
+audited indices. The IPA is built and statically checked here; no iPhone/iPad device
+run is performed by the build.
 
 Prepared mode also accepts `--resource-backend nsp` for external runtime resources.
 That mode still embeds rewritten modules/derived shaders and is not a public binary
@@ -77,8 +92,15 @@ No game containers or keys are placed in bundled artifacts.
 ```sh
 make -C dm/host/tests GAME=01008F1008DA6000 run
 $PYTHON -m unittest discover -s dm/tools/tests -v
+$PYTHON -m unittest discover -s scripts/tests -v
 $PYTHON scripts/check_public.py
 ```
+
+`scripts/tests/test_build_targets.py` covers the two build-wrapper regressions with
+synthetic preparations: per-target shader validation (Mac-only, iOS-only, both, and a
+missing library) and DLC discovery (`aoc/`, `aoc-<digest>/`, five indices, base-only,
+ambiguous, manifest-less and incomplete trees). It needs no game container, rewritten
+module or shader compilation.
 
 Audio/HID tests need access to macOS services; restricted execution can abort at
 AudioUnit setup. Missing capstone/lz4/fonttools is an environment error. A missing

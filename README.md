@@ -65,6 +65,10 @@ capstone/lz4/fonttools, .NET 10 and the shader tools in [building](docs/building
 Use `--prepared` to reuse validated modules/platform shaders. Bundled mode includes
 your prepared resources in a **private local** App/IPA. External mode keeps
 containers/keys on selected storage; see the guide for its DLC/preparation limits.
+Each wrapper builds its own platform alone from the same containers: Mac packages
+`shader/gl` and iOS packages `shader/ios/gl`, so neither needs the other platform's
+library to have been built. Owned DLC in the preparation is audited and packaged on
+both platforms; a base-only preparation builds without it.
 Neither the former repository nor Touchline folders are build dependencies.
 The IPA is unsigned: sign/install it yourself. Local Mac builds are ad-hoc signed,
 without Developer ID signing/notarization. The [user guide](docs/user-guide.md)

@@ -10,7 +10,36 @@ BUNDLE = 'com.ohxiaoguang.dungeon1'
 def run(argv, env=None):
     subprocess.run([str(a) for a in argv], cwd=ROOT, env=env, check=True)
 
-def validate(prepared):
+# Each target packs one shader library: the Mac App gets shader/gl, the iPhone App
+# gets shader/ios (build_ipa.sh reads $MSL_IOS/gl). A Mac-only preparation has no
+# iOS library, so requiring the other platform's library fails a valid build.
+SHADER_PLATFORMS = {'mac': ('gl',), 'ios': ('ios/gl',)}
+
+def shader_platforms(target):
+    if target not in SHADER_PLATFORMS:
+        raise ValueError('Unknown build target: ' + str(target))
+    return SHADER_PLATFORMS[target]
+
+def aoc_tree(prepared):
+    """The verified AOC tree this preparation carries, or None for a base-only copy.
+
+    The container bootstrap writes a fresh tree beside `aoc` as `aoc-<digest>`, so
+    both layouts are accepted. Two candidate trees are ambiguous and a tree without
+    its manifest is an error: neither may silently produce a DLC-less package.
+    """
+    aoc = prepared / 'aoc'
+    if (aoc / 'manifest.json').is_file():
+        return aoc
+    candidates = sorted(prepared.glob('aoc-*/manifest.json'))
+    if len(candidates) > 1:
+        raise ValueError('Ambiguous AOC trees: ' + ', '.join(p.parent.name for p in candidates))
+    if candidates:
+        return candidates[0].parent
+    if aoc.exists():
+        raise ValueError('Supply a preparation with one verified AOC manifest')
+    return None
+
+def validate(prepared, target):
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / 'dm/games'))
     import game
@@ -46,7 +75,7 @@ def validate(prepared):
         for site, number, *_ in patches[table][g.builds()['v393216']['main']]:
             if not any(len(c:=line.split('\t')) >= 4 and c[1] == kind and int(c[2],0) == number and int(c[3],0) == site for line in gates):
                 raise ValueError('Missing ' + kind + ' gate ' + str(number))
-    for platform in ['gl', 'ios/gl']:
+    for platform in shader_platforms(target):
         gl_validate(prepared / 'shader' / platform, PROFILE / 'gl_capture.tsv')
     if not (prepared / 'extract/v393216/RomFS' / g.get('romfs_marker')).is_file():
         raise ValueError('Wrong RomFS')
@@ -91,15 +120,12 @@ def main():
                  '--font-python',a.font_python,'--icon',icon,'--work',a.work/'package','--out',a.out],env)
         return
     prepared = a.prepared.resolve()
-    patched = validate(prepared)
-    print('1.3.0 Build IDs, retained rewriter sources, input gates and both GL libraries verified', flush=True)
+    patched = validate(prepared, a.target)
+    print('1.3.0 Build IDs, retained rewriter sources, input gates and the '
+          + a.target + ' GL library verified', flush=True)
     romfs = prepared/'extract/v393216/RomFS'
-    aoc = prepared/'aoc'
-    if aoc.exists() and not (aoc/'manifest.json').is_file():
-        candidates = sorted(prepared.glob('aoc-*/manifest.json'))
-        if len(candidates) != 1: raise ValueError('Supply a preparation with one verified AOC manifest')
-        aoc = candidates[0].parent
-    if aoc.exists():
+    aoc = aoc_tree(prepared)
+    if aoc is not None:
         from tools.packaging_gui.dlc import audit_tree
         audit_tree(aoc, int(GAME,16))
     if a.target == 'mac':
@@ -116,7 +142,7 @@ def main():
                    '--font',font,'--settings',settings,'--output',a.out,'--title-id',GAME,'--name','Dungeon1','--version','1.3.0']
         if a.resource_backend == 'directory':
             command += ['--romfs',romfs]
-            if aoc.exists(): command += ['--aoc',aoc]
+            if aoc is not None: command += ['--aoc',aoc]
         run(command,env)
         import plistlib
         info = a.out/'Contents/Info.plist'; data=plistlib.loads(info.read_bytes()); data['CFBundleIconFile']='Dungeon1'; info.write_bytes(plistlib.dumps(data))
@@ -129,7 +155,7 @@ def main():
         run(['codesign','--force','--deep','--sign','-',a.out],env)
     else:
         env.update(W=str(a.work/'ios-work'), PATCHED=str(patched), ROMFS=str(romfs),
-                   MSL_IOS=str(prepared/'shader/ios'), AOC=str(aoc) if aoc.exists() and a.resource_backend=='directory' else '',
+                   MSL_IOS=str(prepared/'shader/ios'), AOC=str(aoc) if aoc is not None and a.resource_backend=='directory' else '',
                    GFXAPI='gl', FONT_PY=a.font_python, DM_DISPLAY_NAME='Dungeon1', DM_APP_VERSION='1.3.0',
                    DM_BUNDLE_ID=BUNDLE, DM_ICON=str(icon), DM_RESOURCE_BACKEND=a.resource_backend,
                    DM_IOS_BUILD_DIR=str(a.work/'ios-project'), DM_XCODE_DERIVED_DATA=str(a.work/'xcode-dd'))

@@ -25,3 +25,19 @@
   project/source/license links, scrolling and system appearance.
 - Keep Bundle ID, version guards and all game input/DLC/MOD/save logic unchanged.
 - The new About page's iPhone/iPad device UI remains a focused acceptance item.
+
+## Independent build fixes — 2026-11-01
+
+- Validate only the GL library each target packs (`shader/gl` for Mac, `shader/ios/gl`
+  for iOS). A Mac-only preparation no longer fails on the absent iOS library, iOS-only
+  no longer needs the Mac one, and a missing library for the target is still an error.
+- Resolve DLC from `aoc/manifest.json` or the container bootstrap's `aoc-<digest>/`;
+  Mac packaging previously reused the narrow `aoc` path and silently dropped all five
+  owned packs. Ambiguous or manifest-less trees stop the build; base-only still builds.
+- Add `scripts/tests/test_build_targets.py` (13 synthetic-preparation tests) covering
+  per-target shader validation and DLC discovery/audit, including five indices and
+  incomplete or unrelated trees.
+- Record the verification this restores: Mac and iOS cold builds from the original
+  containers each produced artifacts with five audited DLC indices; macOS was run to
+  the title screen, iOS was built and statically checked without a device run.
+- Ignore local build output (`out/`) so generated Apps, IPAs and caches stay untracked.
