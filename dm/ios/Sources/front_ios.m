@@ -102,7 +102,10 @@ static void launcher_done(void) { [g_root startGame]; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
 - (BOOL)prefersStatusBarHidden { return YES; }
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
+// iPad rotates with the device in every direction, as a Stage Manager or Split View window needs (the 16:9 picture is letterboxed in it); iPhone keeps the landscape-only screen the game had
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskLandscape;
+}
 @end
 UIViewController *front_ios_root(void) { return [DmRootVC new]; }
 

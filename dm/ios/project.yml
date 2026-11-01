@@ -39,10 +39,14 @@ targets:
         UILaunchStoryboardName: ""
         UIFileSharingEnabled: true          # Documents (log.txt, saves) visible in the Files app
         LSSupportsOpeningDocumentsInPlace: true
-        UISupportedInterfaceOrientations:
+        UISupportedInterfaceOrientations:            # iPhone: the game's landscape-only screen
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationLandscapeLeft
-        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations~ipad:       # iPad: all four, so a Stage Manager window follows the device (no UIRequiresFullScreen: it keeps the App out of multitasking and forces the landscape rotation on the whole screen)
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIStatusBarHidden: true
         UIViewControllerBasedStatusBarAppearance: false
         LSApplicationCategoryType: ${DM_APP_CATEGORY}   # game profile app_category
