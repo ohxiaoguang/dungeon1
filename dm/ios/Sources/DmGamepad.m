@@ -1,4 +1,6 @@
 #include "TouchControlVisibility.h"
+#include "TouchTrackpadPolicy.h"
+#include "dm_swipe.h"   // the swipe contact, shared with the Mac front end
 // Virtual gamepad (Nintendo button positions) + physical controllers (GameController). Both are merged and handed to the host through dm_input_set (hle_hid.c, bit layout in dm_input.h).
 //   Three layouts in every console mode; one tap on the layout button at the top centre (labelled with the current layout, "2D" / "3D" / "Tap") goes
 //   to the next — Tap → 2D → 3D → Tap — and the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the
@@ -17,6 +19,13 @@
 //   Three switches, each its own environment variable and never shared: Enable touchscreen input (DM_TOUCH_INPUT) stops every point from reaching the host while
 //   the overlay and the layout button keep answering; Show virtual controller (DM_TOUCH_CONTROLS) draws or hides the controls; Touch feedback (DM_TOUCH_HAPTICS)
 //   is the haptic click on a press. A physical controller hides the overlay without touching either of the other two.
+//   "Enable touchscreen input" also carries the third input mode, the virtual trackpad (DM_TOUCH_INPUT=trackpad, dm_input.h): the screen is one trackpad, its
+//   fingers drive a cursor the game's pointer follows, and the modes stay mutually exclusive because the same variable selects them. In that mode a touch
+//   publishes nothing while it is only down: a quick still tap publishes one contact at the cursor (down and up in the same turn - the game's own Tap, which is
+//   its click), a swipe publishes a position and no contact at all, a long still press publishes nothing, and two fingers that pause and then move carry the
+//   item under the pointer as a drag. The classification lives in TouchTrackpadPolicy.h; nothing here decides what a touch means on its own. A touchpad stroke
+//   never drives a control: the overlay is not drawn in that mode. When a gesture is cancelled (resign active, a lost touch, a third finger) a drag's contact
+//   is cancelled rather than lifted, so no click or drop can arrive late.
 //   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
 //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
 #import <UIKit/UIKit.h>
@@ -98,8 +107,11 @@ static const CGFloat
     K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
+static NSString *const k_cursor_x = @"DmPadCursorX";    // the virtual trackpad's cursor, normalized on the 16:9 picture:
+static NSString *const k_cursor_y = @"DmPadCursorY";    // kept so the pointer is where the player left it, not at the centre
 
 @interface DmGamepad : UIView
+- (void)layoutArrow;   // the trackpad's pointer, drawn in the Shapes section below (called from the strokes and layout)
 @end
 static __weak DmGamepad *g_view;
 
@@ -122,6 +134,16 @@ static __weak DmGamepad *g_view;
     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
     BOOL _gameTouch;                               // "Enable touchscreen input" (DM_TOUCH_INPUT): the game is sent the touch screen at all
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
+    int _inputMode;                                // DM_TOUCH_INPUT as dm_input.h reads it: off / touch / trackpad
+    BOOL _trackpad;                                // the virtual trackpad is the mode: the whole screen is one pad
+    CGPoint _cursor;                               // its cursor, normalized on the 16:9 picture (kept across launches)
+    NSMutableArray<UITouch *> *_tpTouches;         // every finger on the glass in this mode, in the order they went down
+    dm_tp_gesture _tp;                             // what those fingers mean: tap, cursor, swipe or drag (TouchTrackpadPolicy.h)
+    BOOL _dragging;                                // a two-finger drag's contact is down
+    BOOL _swiping;                                 // a two-finger swipe's contact is down
+    dm_swipe _swipe;                               // that swipe's contact, moved by the shared adapter (dm/host/dm_swipe.h)
+    CAShapeLayer *_arrow;                          // the pointer drawn for the trackpad (this build has no sprite of its own)
+    float _pointerGain;                            // DM_TRACKPAD_SPEED: how far the cursor travels per point of finger travel
 }
 
 static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn;
@@ -136,6 +158,14 @@ static CATextLayer *label(CALayer *parent, NSString *s) {
     t.string = s; t.alignmentMode = kCAAlignmentCenter; t.foregroundColor = k_text.CGColor; t.contentsScale = UIScreen.mainScreen.scale;
     [parent addSublayer:t]; return t;
 }
+// The trackpad's pointer gain (DM_TRACKPAD_SPEED; launcher.DM_TRACKPAD_SPEED when the app started without it). It
+// scales the cursor's travel only - never the click position, never the stroke's state machine - and it is clamped to
+// the range the launcher offers, so a hand-written env file cannot make the pointer uncontrollable.
+static float trackpad_gain(const char *value, NSString *saved) {
+    float v = value && *value ? strtof(value, NULL) : saved ? saved.floatValue : 1.0f;
+    if (!isfinite(v) || v <= 0) v = 1.0f;
+    return fminf(fmaxf(v, 0.5f), 2.0f);
+}
 static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   // keys shown only in the 3D layout
 
 - (instancetype)initWithFrame:(CGRect)f {
@@ -147,6 +177,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
             [_touchFeedback prepare];
         }
         _owner = [NSMapTable strongToStrongObjectsMapTable]; _faceOf = [NSMapTable strongToStrongObjectsMapTable];
+        _tpTouches = [NSMutableArray array];
         static dispatch_once_t once;
         dispatch_once(&once, ^{
             // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
@@ -160,9 +191,36 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         _showRightStick = right ? atoi(right) != 0 : savedRight.boolValue;
         // "Enable touchscreen input": on unless turned off; the launcher sets the environment variable before the game
         // starts, the saved choice covers an App started without it. Independent of the overlay's own two switches.
+        // The same variable names the virtual trackpad, which replaces the overlay instead of adding to it.
         const char *input = getenv("DM_TOUCH_INPUT");
         NSString *savedInput = [NSUserDefaults.standardUserDefaults stringForKey:@"launcher.DM_TOUCH_INPUT"];
-        _gameTouch = input ? atoi(input) != 0 : savedInput ? savedInput.boolValue : YES;
+        _inputMode = dm_touch_input_mode(input ? input : savedInput.UTF8String);
+        _gameTouch = _inputMode != DM_TOUCH_INPUT_OFF;
+        _trackpad = _inputMode == DM_TOUCH_INPUT_TRACKPAD;
+        if (_trackpad) _showControls = NO;   // one trackpad, no controls: nothing else may answer a touch
+        NSNumber *cx = [NSUserDefaults.standardUserDefaults objectForKey:k_cursor_x];
+        NSNumber *cy = [NSUserDefaults.standardUserDefaults objectForKey:k_cursor_y];
+        _cursor = CGPointMake(cx ? cx.doubleValue : 0.5, cy ? cy.doubleValue : 0.5);
+        _pointerGain = trackpad_gain(getenv("DM_TRACKPAD_SPEED"),
+                                     [NSUserDefaults.standardUserDefaults stringForKey:@"launcher.DM_TRACKPAD_SPEED"]);
+        if (_trackpad) {
+            // Nothing is published yet: the game's pointer is not written before the player's first input, so a fresh
+            // launch behaves exactly like the old build until the screen is touched. The first stroke publishes the
+            // cursor (publishPointer) and the first tap is the game's own Tap, which stores the point it clicked.
+            LOG("front end: virtual trackpad, cursor at %.3f,%.3f, pointer speed %.1fx", _cursor.x, _cursor.y, _pointerGain);
+        }
+        if (_trackpad) {
+            // The arrow is this overlay's own: the game draws no pointer for touch input, so the mode has to show one.
+            // White fill with a dark outline, a soft shadow for light backgrounds, and it is added to the view's own
+            // layer - not to _controls, which hides while a physical controller is connected.
+            _arrow = [CAShapeLayer layer];
+            _arrow.fillColor = [UIColor colorWithWhite:1 alpha:0.96].CGColor;
+            _arrow.strokeColor = [UIColor colorWithWhite:0 alpha:0.8].CGColor;
+            _arrow.lineJoin = kCALineJoinRound;
+            _arrow.shadowColor = UIColor.blackColor.CGColor;
+            _arrow.shadowOpacity = 0.35f; _arrow.shadowRadius = 1.5; _arrow.shadowOffset = CGSizeZero;
+            [self.layer addSublayer:_arrow];
+        }
         _controls = [CALayer layer]; [self.layer addSublayer:_controls];
         _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
         _knob = shape(_controls);
@@ -265,6 +323,138 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     return CGPointMake(dx, dy);
 }
 
+// ---- Virtual trackpad (DM_TOUCH_INPUT=trackpad) ----
+// The picture the game draws into, in this view: the 16:9 rectangle front_ios.m centres, computed the way that view
+// lays the game out (its origin is floored there too), so a cursor position means the same thing to the game, to the
+// pointer bridge, to what is stored on disk and to the arrow drawn on top of the picture.
+- (CGRect)picture {
+    CGRect b = self.bounds; CGFloat w = b.size.width, h = b.size.height;
+    if (w <= 0 || h <= 0) return CGRectZero;
+    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    return CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
+}
+// The cursor itself: a position for the host's pointer handoff (dm_cursor_set), never a touch and never a click.
+- (void)publishPointer { dm_cursor_set(1, (float)_cursor.x, (float)_cursor.y); }
+// The one contact this mode may publish, always at the cursor. A tap is down and up in the same turn: the touch layer
+// reports Start then End, the recognizer Touch then Tap, which is the game's own click. A drag keeps the same contact
+// down for as long as the two fingers do.
+- (void)publishTouch:(BOOL)down {
+    if (!down) { dm_touch_set_from(NULL, 0, DM_CONTACT_IOS); return; }
+    dm_touch t = {0, (float)_cursor.x, (float)_cursor.y};
+    dm_touch_set_from(&t, 1, DM_CONTACT_IOS);
+}
+// One click at the cursor and nothing else. Both publications happen in this turn on purpose: the contact is never
+// down long enough for the game to read it as a hold, so a tap can never turn into Press, a pickup or a purchase.
+- (void)clickAtCursor { [self publishTouch:YES]; [self publishTouch:NO]; }
+- (void)saveCursor {
+    [NSUserDefaults.standardUserDefaults setObject:@(_cursor.x) forKey:k_cursor_x];
+    [NSUserDefaults.standardUserDefaults setObject:@(_cursor.y) forKey:k_cursor_y];
+}
+// The recognizer's own "still" rule (8 panel pixels per axis, plus one for the published truncation), in view points.
+- (float)tpSlop {
+    CGRect pic = [self picture];
+    return pic.size.width > 0 ? dm_trackpad_slop((float)pic.size.width) : DM_TRACKPAD_SLOP_PANEL;
+}
+// The fingers on the glass, in the order they went down, and how many there are (a third is only counted, never
+// read: it cancels whatever is in progress). Positions are view points.
+- (int)tpPoints:(CGPoint *)p {
+    NSUInteger n = MIN(_tpTouches.count, (NSUInteger)2);
+    for (NSUInteger i = 0; i < n; i++) p[i] = [_tpTouches[i] locationInView:self];
+    return (int)_tpTouches.count;
+}
+// The cursor moves with the finger (or with the two fingers' midpoint), scaled by the pointer speed and clamped to the
+// picture. It publishes the position only - the contact is published by a click or a drag, never by a move.
+- (void)moveCursorBy:(float)dx dy:(float)dy {
+    CGRect pic = [self picture];
+    if (pic.size.width <= 0 || pic.size.height <= 0) return;
+    _cursor.x = dm_trackpad_clamp((float)(_cursor.x + _pointerGain * dx / pic.size.width));
+    _cursor.y = dm_trackpad_clamp((float)(_cursor.y + _pointerGain * dy / pic.size.height));
+    [self publishPointer]; [self layoutArrow];
+}
+// A swipe's contact and the pointer both follow the fingers. The arithmetic is the Mac front end's too
+// (dm/host/dm_swipe.h), so the two platforms cannot drift apart; the pointer travels with the contact, which keeps the
+// arrow, the game's pointer and the point a later tap would click on the same pixel.
+- (void)swipeBy:(float)dx dy:(float)dy {
+    CGRect pic = [self picture];
+    if (!_swipe.active || pic.size.width <= 0 || pic.size.height <= 0) return;
+    float nx, ny;
+    if (!dm_swipe_move(&_swipe, dm_touch_now_ns(), dx, dy, (float)pic.size.width, (float)pic.size.height,
+                       _pointerGain, &nx, &ny)) return;
+    _cursor.x = nx; _cursor.y = ny;
+    [self publishPointer]; [self publishTouch:YES]; [self layoutArrow];
+}
+// A finger went down. Nothing is published: the gesture is only classified (TouchTrackpadPolicy.h), so putting a
+// finger on the glass can no longer pick up, drag, buy or toggle whatever the pointer happens to be over - however
+// long it stays there.
+- (void)trackpadBegan:(NSSet<UITouch *> *)ts {
+    for (UITouch *t in ts) if (![_tpTouches containsObject:t]) [_tpTouches addObject:t];
+    CGPoint p[2] = {CGPointZero, CGPointZero};
+    int n = [self tpPoints:p];
+    int a = dm_tp_down(&_tp, dm_touch_now_ns(), n, (float)p[0].x, (float)p[0].y, (float)p[1].x, (float)p[1].y);
+    if (a == DM_TP_CONTACT_CANCEL) { dm_touch_cancel_from(DM_CONTACT_IOS); _dragging = _swiping = NO; }   // a third finger
+    [self layoutArrow];
+}
+// A finger moved: the cursor follows it, or a two-finger drag that has served its pause starts here. A two-finger
+// swipe that moves before the pause is a scroll intent and stays inert (see the header): it never becomes a drag,
+// never becomes a click, and never publishes a contact of its own.
+- (void)trackpadMoved:(NSSet<UITouch *> *)ts {
+    (void)ts;
+    CGPoint p[2] = {CGPointZero, CGPointZero};
+    int n = [self tpPoints:p];
+    float dx = 0, dy = 0;
+    int a = dm_tp_move(&_tp, dm_touch_now_ns(), n, (float)p[0].x, (float)p[0].y, (float)p[1].x, (float)p[1].y,
+                       [self tpSlop], &dx, &dy);
+    switch (a) {
+    case DM_TP_CURSOR: [self moveCursorBy:dx dy:dy]; break;
+    case DM_TP_DRAG_DOWN:
+        // The contact opens exactly where the pointer is and the pointer does not move in this call: the game's next
+        // read must hit-test the item the player picked, not a point a few pixels away. The travel that decided the
+        // drag is added by the following moves (the policy measured it from the pause's own pivot).
+        [self publishPointer];
+        [self publishTouch:YES];
+        _dragging = YES;
+        [self layoutArrow];
+        break;
+    case DM_TP_DRAG_MOVE:
+        [self moveCursorBy:dx dy:dy];
+        [self publishTouch:YES];
+        break;
+    case DM_TP_SWIPE_DOWN:
+        // The game's own touch drag, opened where the pointer is: this is what pulls the torch down and what a list
+        // follows. The travel that decided the swipe is added by the moves that come after it.
+        dm_swipe_begin(&_swipe, dm_touch_now_ns(), (float)_cursor.x, (float)_cursor.y);
+        [self publishPointer];
+        [self publishTouch:YES];
+        _swiping = YES;
+        [self layoutArrow];
+        break;
+    case DM_TP_SWIPE_MOVE:
+        [self swipeBy:dx dy:dy];
+        break;
+    default: break;
+    }
+}
+// A finger lifted. Only a quick still finger inside the slop is a click (the test for it is in the header); a drag
+// lifts its contact; everything else ends silently. A finger left on the glass after a gesture is ignored until it
+// lifts too, so it cannot produce a click of its own.
+- (void)trackpadEnded:(NSSet<UITouch *> *)ts tapped:(BOOL)ended {
+    for (UITouch *t in ts) [_tpTouches removeObject:t];
+    if (ended) {
+        int a = dm_tp_up(&_tp, dm_touch_now_ns(), (int)_tpTouches.count);
+        if (a == DM_TP_CLICK) [self clickAtCursor];
+        else if (a == DM_TP_DRAG_UP) { [self publishTouch:NO]; _dragging = NO; [self layoutArrow]; }
+        else if (a == DM_TP_SWIPE_UP) { [self publishTouch:NO]; _swiping = NO; dm_swipe_end(&_swipe); [self layoutArrow]; }
+    } else {                             // cancelled: never lift (a lift can still arrive as the game's Tap)
+        if (dm_tp_cancel(&_tp) == DM_TP_CONTACT_CANCEL) dm_touch_cancel_from(DM_CONTACT_IOS);
+        _dragging = _swiping = NO;
+        dm_swipe_end(&_swipe);
+        [_tpTouches removeAllObjects];
+        dm_tp_reset(&_tp);
+        [self layoutArrow];
+    }
+    [self saveCursor];
+}
+
 // ---- Touch ----
 - (void)recompute {
     uint64_t face = 0; for (UITouch *t in _faceOf) face |= [_faceOf objectForKey:t].unsignedLongLongValue;
@@ -318,6 +508,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     return NO;
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (_trackpad) { [self trackpadBegan:ts]; return; }   // the pad takes every touch, controls included
     BOOL game = NO;
     for (UITouch *t in ts) {
         if (_padOff) { game |= [self gameBegin:t]; continue; }
@@ -340,6 +531,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     [self recompute];
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (_trackpad) { [self trackpadMoved:ts]; return; }
     BOOL game = NO;
     for (UITouch *t in ts) {
         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
@@ -353,6 +545,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     [self recompute];
 }
 - (void)endTouches:(NSSet<UITouch *> *)ts tapped:(BOOL)ended {
+    if (_trackpad) { [self trackpadEnded:ts tapped:ended]; return; }
     BOOL swap = NO, game = NO;
     for (UITouch *t in ts) {
         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue;
@@ -369,7 +562,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
-- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; dm_touch_cancel_from(DM_CONTACT_IOS); [self recompute]; }
+- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; [_tpTouches removeAllObjects]; dm_tp_reset(&_tp); _dragging = _swiping = NO; dm_swipe_end(&_swipe); dm_touch_cancel_from(DM_CONTACT_IOS); [self recompute]; [self layoutArrow]; }
 
 // ---- Shapes ----
 static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
@@ -393,12 +586,54 @@ static CGPathRef armPath(CGPoint c, CGFloat R, CGFloat w, CGFloat in, CGFloat an
     CGPathCloseSubpath(p); return p;
 }
 static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p; CGPathRelease(p); }
+// The classic arrow, tip at (0,0) in a 12u × 19u box: the left edge straight down, the notch, then the tail.
+static CGPathRef arrowPath(CGFloat u) {
+    static const CGFloat k[7][2] = {{0, 0}, {0, 16.4f}, {4.1f, 12.5f}, {6.9f, 18.6f}, {9.2f, 17.4f}, {6.6f, 11.6f}, {11.4f, 11.2f}};
+    CGMutablePathRef p = CGPathCreateMutable();
+    for (int i = 0; i < 7; i++) {
+        CGPoint v = CGPointMake(k[i][0] * u, k[i][1] * u);
+        if (i) CGPathAddLineToPoint(p, NULL, v.x, v.y); else CGPathMoveToPoint(p, NULL, v.x, v.y);
+    }
+    CGPathCloseSubpath(p);
+    return p;
+}
 static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
     t.font = f; t.fontSize = fs;
     CGFloat h = CTFontGetAscent(f) + CTFontGetDescent(f) + CTFontGetLeading(f), w = fs * 3;
     t.frame = CGRectMake(c.x - w / 2, c.y - h / 2, w, h);
     CFRelease(f);
+}
+
+// The trackpad's pointer. Its tip is the game's own pointer: the panel coordinate the handoff publishes
+// (dm_panel_point of the cursor, dm_input.h) mapped back into the picture rectangle (TouchTrackpadPolicy.h), so what
+// is seen and what is clicked cannot drift apart - not even by the panel pixel the normalized position would round.
+// It follows a stroke as it happens, keeps its place when the finger lifts, and is redrawn on every layout, so a
+// letterboxed picture, a rotation or a Stage Manager resize needs nothing else. It is a CALayer: it takes no part in
+// hit testing and produces no input event.
+- (void)layoutArrow {
+    if (!_arrow) return;                       // the other two input modes never create it
+    CGRect pic = [self picture];
+    int px = 0, py = 0;
+    dm_panel_point((float)_cursor.x, (float)_cursor.y, &px, &py);
+    float x = 0, y = 0;
+    dm_trackpad_arrow_tip(px, py, (float)pic.origin.x, (float)pic.origin.y,
+                          (float)pic.size.width, (float)pic.size.height, &x, &y);
+    // 12 x 19 at u = 1 (the pad's own scale), never smaller than 0.9 u so it stays visible in a small Stage Manager
+    // window, and never larger than the pad: it must read as a pointer without covering the picture.
+    CGFloat u = MAX(0.9, self.u), w = 12 * u, h = 19 * u;
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    _arrow.hidden = !_trackpad;
+    // A gesture with a live contact tints the pointer, so a carried item (a drag, orange) and a swipe (blue: the game
+    // is being dragged under the pointer) both read differently from a plain hover. Everything else stays white.
+    _arrow.fillColor = (_dragging ? [UIColor colorWithRed:1 green:0.72 blue:0.3 alpha:0.97]
+                       : _swiping ? [UIColor colorWithRed:0.45 green:0.72 blue:1 alpha:0.97]
+                                  : [UIColor colorWithWhite:1 alpha:0.96]).CGColor;
+    _arrow.lineWidth = MAX(1.0, 1.05 * u);
+    _arrow.bounds = CGRectMake(0, 0, w, h);
+    _arrow.frame = CGRectMake(x, y, w, h);     // the path starts at (0,0): the frame's corner is the tip
+    setPath(_arrow, arrowPath(u));
+    [CATransaction commit];
 }
 
 - (void)layoutSubviews {
@@ -428,6 +663,7 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
     [CATransaction commit];
     [self refresh];
+    [self layoutArrow];   // the picture rectangle and u may have changed: rotation, split view, Stage Manager
 }
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
 - (void)refresh {   // pressed state → fill, sticks → knob position

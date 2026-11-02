@@ -156,7 +156,6 @@ private struct LauncherView: View {
                         }
                     }
                 }
-                LauncherLanguageRow()
                 // External mode: what was found in Documents, what it matched, and the diagnostics when it did not. Embedded mode:
                 // the files are in the App, so there is nothing to find, choose or diagnose — only a real problem, if the App is
                 // incomplete. Scanning and its checks are not disabled there: main.m verifies the RomFS marker before any UI.
@@ -171,7 +170,7 @@ private struct LauncherView: View {
                         Text(l(problem)).font(.footnote).foregroundStyle(Color.red)
                     }
                 }
-                ForEach(m.settings) { SettingRow(s: $0, m: m) }
+                LauncherSettingsSections(m: m)
                 Section {
                     Button { about = true } label: {
                         Label(language.language.resolved == .simplifiedChinese ? "关于 Dungeon1" : "About Dungeon1", systemImage: "info.circle")

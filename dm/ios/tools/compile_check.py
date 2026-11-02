@@ -41,7 +41,8 @@ with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as ex:
     for s, rc, err in ex.map(one, srcs):
         if rc: bad += 1; print(f'FAIL {os.path.relpath(s, repo)}\n{err}', file=sys.stderr)
 # Swift: the shared launcher sources plus the iOS launcher and the embedded-resource check it calls, type-checked for the iPhone SDK
-swift = [f'{repo}/gui/Sources/PackagingModel/Localization.swift', f'{repo}/dm/apple/LauncherSettings.swift', f'{repo}/dm/apple/ResourceDiscovery.swift',
+swift = [f'{repo}/gui/Sources/PackagingModel/Localization.swift', f'{repo}/dm/apple/AboutDungeon1.swift',
+         f'{repo}/dm/apple/LauncherSettings.swift', f'{repo}/dm/apple/ResourceDiscovery.swift',
          f'{ios}/Sources/BundledResources.swift', f'{ios}/Sources/Launcher.swift']
 p = subprocess.run(['xcrun', '-sdk', 'iphoneos', 'swiftc', '-typecheck', '-disable-sandbox', '-swift-version', '5',
                     '-target', 'arm64-apple-ios26.0'] + swift, capture_output=True, text=True)

@@ -46,7 +46,7 @@ RESOURCE_BACKEND = 'directory'          # directory or nsp; nsp omits bundled Ro
 NSP_PREPARE_OUTPUT = ''                # optional fresh folder under NSP_DIR: prepare program/Shader inputs without RomFS, then stop
 KEEP_EXTRACTED = True                   # keep the extracted game files after the IPA is built (saves extraction next time; as big as the game files); False deletes them
 DM_ENV_FILE = ''                        # optional: environment switches for a diagnostic build (one KEY=VALUE per line)
-SHOW_FPS = True                         # True shows the game's frame rate on the iPhone (frames on screen per second, top left); DM_SHOW_FPS=0 / 1 in the app's Documents/env.txt changes it without a rebuild
+SHOW_FPS = False                        # False keeps the frame-rate counter off on the iPhone (the launcher's default comes from this: settings.tsv's build:DM_SHOW_FPS); --show-fps builds it on, and DM_SHOW_FPS=0 / 1 in the app's Documents/env.txt changes it without a rebuild
 SURVEY_ONLY = False                     # a game with no profile in dm/games: only write the survey, no provisional profile and no IPA
 PROFILE_OUT = ''                        # where a provisional profile goes (empty = <NSP folder>/<title ID>_build/profile; the profile is <this>/<title ID>/)
 ALLOW_DAMAGED = False                   # a damaged NSP (files failing the NCA's hash check: an incomplete copy or a broken download) stops the build; True writes those files as read and goes on
@@ -1576,7 +1576,7 @@ def parse_args(argv):
     ap.add_argument('--nsp-build-work', help='new isolated build directory under the NSP folder; requires --use-nsp-prepared')
     ap.add_argument('--ios-shader-context', help='existing certified iOS Shader context with source chain verifier; requires --use-nsp-prepared')
     ap.add_argument('--env-file', help='environment switches for a diagnostic build (one KEY=VALUE per line)')
-    ap.add_argument('--show-fps', action=argparse.BooleanOptionalAction, help='show the game\'s frame rate on the iPhone, frames on screen per second at the top left (default: the SHOW_FPS setting, on)')
+    ap.add_argument('--show-fps', action=argparse.BooleanOptionalAction, help='show the game\'s frame rate on the iPhone, frames on screen per second at the top left (default: the SHOW_FPS setting, off)')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
     ap.add_argument('--allow-damaged', action='store_true', help='a damaged NSP (files failing the NCA hash check): write them as read and go on instead of stopping')
     ap.add_argument('--profile-out', help='where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')

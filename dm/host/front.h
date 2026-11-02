@@ -27,7 +27,9 @@ typedef struct { uint32_t id; float x, y; } dm_touch;
 void dm_touch_set(const dm_touch *t, int n);
 // Optional title policies observe the same contacts/Press recognizer. Legacy
 // callers keep source=UNKNOWN; a policy must never reinterpret those as fingers.
-enum { DM_CONTACT_UNKNOWN, DM_CONTACT_IOS, DM_CONTACT_MAC_LEFT };
+// MAC_SWIPE is a two-finger trackpad swipe the Mac front end turned into a contact (dm_swipe.h); it is deliberately
+// not MAC_LEFT, so the title's own left-button policies (the town roster hold) cannot fire from a scroll.
+enum { DM_CONTACT_UNKNOWN, DM_CONTACT_IOS, DM_CONTACT_MAC_LEFT, DM_CONTACT_MAC_SWIPE };
 enum { DM_CONTACT_DOWN, DM_CONTACT_HOLDING, DM_CONTACT_PRESS, DM_CONTACT_CANCELLED, DM_CONTACT_RELEASED };
 typedef struct {
     uint64_t generation, revision, sample;

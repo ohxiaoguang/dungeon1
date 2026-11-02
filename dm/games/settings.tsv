@@ -10,7 +10,7 @@ DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Console mode
 DM_LANG	choice	languages	build:DM_LANG	languages>1	Game language
 DM_SHOW_FPS	toggle	-	build:DM_SHOW_FPS	always	Frame-rate counter
 DM_METAL_HUD	toggle	-	0	always	Performance HUD
-DM_TOUCH_HAPTICS	toggle	-	1	always	Touch feedback	Haptic clicks when pressing touch controls.
-DM_RUMBLE	toggle	-	1	always	Game rumble	Vibration from the game on your phone or connected controller.
+DM_TOUCH_HAPTICS	toggle	-	0	always	Touch feedback	Haptic clicks when pressing the virtual gamepad's controls.
+DM_RUMBLE	toggle	-	0	always	Game rumble	Vibration from the game on your phone or connected controller.
 DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Rumble strength	Adjusts game rumble alongside the game's own vibration setting.
-DM_DD_TOUCH_POLICY	toggle	-	1	DM_GAME_ID==01008F1008DA6000	Darkest Dungeon touch policy (experimental)	iOS character combat/camping skills: hold to toggle. Nomad Wagon, both the gold page and the DLC/Comet page: short tap focuses; holding for 0.5 s and releasing runs the game's own purchase once. Town roster (iPhone touch and Mac left button): holding for 0.5 s and releasing appends the game's original details action once, so the details open on release. Other Mac behavior is unchanged. Requires newly prepared 1.3.0 modules.
+DM_DD_TOUCH_POLICY	toggle	-	0	DM_GAME_ID==01008F1008DA6000	Touch interaction policy (experimental)	Hold and long-press behaviour this build adds to the game's own touch handling: combat and camping skills toggle on a hold, the Nomad and Comet shops focus on a short tap and run their own purchase once on a 0.5 s hold, and a held town roster portrait opens the details on release. Off is the game's original behaviour. Needs the prepared 1.3.0 modules.

@@ -11,6 +11,7 @@
 #import <GameController/GameController.h>
 #include "dm.h"
 #include "dm_input.h"
+#include "dm_swipe.h"   // two-finger swipe -> one synthetic contact, shared with the iOS trackpad
 #include "front.h"
 #include "hle.h"
 #include "pad_slots.h"
@@ -171,14 +172,34 @@ static void pads_start(void) {
 @interface DmGameView : NSView {
     NSTrackingArea *_mouseTracking;
     uint32_t _mouseButtons;
+    dm_swipe _swipe;          // the contact a two-finger trackpad swipe is turning into (dm_swipe.h)
 }
 - (void)mouseFocusChanged:(BOOL)focused;
+- (void)swipeWheel:(NSEvent *)e;
+- (void)swipeEnd:(BOOL)lift;
 @end
 @implementation DmGameView
 - (BOOL)pointerPosition:(NSEvent *)e x:(float *)x y:(float *)y {
     NSPoint point = e ? e.locationInWindow : self.window.mouseLocationOutsideOfEventStream;
     NSPoint p = [self convertPoint:point fromView:nil]; NSSize b = self.bounds.size;
     return dm_mouse_position(p.x, p.y, b.width, b.height, x, y);
+}
+// Only this title, and only while the experimental mouse control is on (the launcher's switch sets DM_MOUSE_HID): the
+// host is built per game from DM_GAME_ID, so no other game can enter this path - their mouse and wheel behaviour is
+// exactly what it was.
+static int front_swipe_enabled(void) {
+    static int on = -1;
+    if (on < 0) on = dm_mouse_enabled() && !strcmp(DM_GAME_ID, "01008F1008DA6000");
+    return on;
+}
+// The 16:9 picture the game draws into, in view points - the same rectangle dm_mouse_position normalizes within, so a
+// contact coordinate means the same thing to the game, to the mouse and to the swipe.
+- (NSRect)pictureRect {
+    NSSize b = self.bounds.size;
+    if (b.width <= 0 || b.height <= 0) return NSZeroRect;
+    CGFloat w = b.width, h = b.height;
+    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    return NSMakeRect((b.width - w) / 2, (b.height - h) / 2, w, h);
 }
 - (void)publishMouse:(NSEvent *)e {
     if (!dm_mouse_enabled()) return;
@@ -189,6 +210,7 @@ static void pads_start(void) {
 }
 - (void)mouseFocusChanged:(BOOL)focused {
     if (!dm_mouse_enabled()) return;
+    [self swipeEnd:NO];   // a swipe's contact must not survive the window losing focus (a lift could become a Tap)
     _mouseButtons = 0;
     if (focused) [self publishMouse:nil];
     else { dm_mouse_set(0, 0, 0, 0); dm_touch_set(NULL, 0); }
@@ -206,7 +228,7 @@ static void pads_start(void) {
 - (void)mouseEntered:(NSEvent *)e { [self publishMouse:e]; }
 - (void)mouseExited:(NSEvent *)e { (void)e; _mouseButtons = 0; dm_mouse_set(0, 0, 0, 0); }
 - (void)mouseMoved:(NSEvent *)e { [self publishMouse:e]; } // never a touch
-- (void)mouseDown:(NSEvent *)e { [self mouseDragged:e]; }
+- (void)mouseDown:(NSEvent *)e { [self swipeEnd:NO]; [self mouseDragged:e]; }   // a real drag owns the input
 - (void)mouseDragged:(NSEvent *)e {
     _mouseButtons |= DM_MOUSE_LEFT; [self publishMouse:e];
     if (self.bounds.size.width <= 0 || self.bounds.size.height <= 0) return;
@@ -249,6 +271,54 @@ static void pads_start(void) {
     // Preserve AppKit's signed scrolling units (including the user's natural
     // scrolling preference). The HID adapter accumulates sub-unit trackpad input.
     dm_mouse_scroll(e.scrollingDeltaX, e.scrollingDeltaY);
+    [self swipeWheel:e];   // and, for this title, the same gesture as the game's own touch drag
+}
+// A two-finger trackpad swipe becomes one game contact that follows the fingers from the mouse pointer (dm_swipe.h).
+// The game reads no mouse, so this is the only way its own scrolling/torch drag can be reached from a trackpad; the
+// mouse itself does not move, no button is pressed, and a left-button drag in progress is never touched.
+- (void)swipeWheel:(NSEvent *)e {
+    if (!front_swipe_enabled() || !e.hasPreciseScrollingDeltas) return;   // a plain wheel is not a two-finger swipe
+    // Inertia arrives after the fingers are off the glass: it must never keep a contact moving.
+    if (e.momentumPhase != NSEventPhaseNone) { [self swipeEnd:NO]; return; }
+    if (e.phase & (NSEventPhaseEnded | NSEventPhaseCancelled)) { [self swipeEnd:YES]; return; }
+    if (_mouseButtons & DM_MOUSE_LEFT) { [self swipeEnd:NO]; return; }    // a held button is a drag of its own
+    if (e.phase & NSEventPhaseMayBegin) return;                          // fingers resting: nothing has moved yet
+    uint64_t now = dm_swipe_now_ns();
+    float dx = dm_swipe_component(e.scrollingDeltaX, e.isDirectionInvertedFromDevice);
+    float dy = dm_swipe_component(e.scrollingDeltaY, e.isDirectionInvertedFromDevice);
+    NSRect pic = [self pictureRect];
+    if (!_swipe.active) {
+        float x, y;
+        if (![self pointerPosition:e x:&x y:&y]) return;                  // outside the picture: nothing to drag
+        dm_swipe_begin(&_swipe, now, x, y);
+        dm_touch t = {0, x, y};
+        dm_touch_set_from(&t, 1, DM_CONTACT_MAC_SWIPE);                   // the contact opens at the pointer
+        [self swipeArm];                                                  // and ends even if no event ever does
+        if (dx == 0 && dy == 0) return;
+    }
+    float nx, ny;
+    if (dm_swipe_move(&_swipe, now, dx, dy, (float)pic.size.width, (float)pic.size.height, DM_SWIPE_GAIN, &nx, &ny)) {
+        dm_touch t = {0, nx, ny};
+        dm_touch_set_from(&t, 1, DM_CONTACT_MAC_SWIPE);
+    }
+}
+// The contact ends when the gesture says so, when the left button takes the input over, or when nothing has arrived
+// for DM_SWIPE_IDLE_NS - the last one is what keeps a phase-less device (or a stalled trackpad) from leaving a contact
+// pressed, which the title would promote to Press after 0.5 s.
+- (void)swipeArm {
+    __weak DmGameView *weak = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(DM_SWIPE_IDLE_NS + 50000000ull)), dispatch_get_main_queue(), ^{
+        DmGameView *view = weak;
+        if (!view || !view->_swipe.active) return;
+        if (!dm_swipe_idle(&view->_swipe, dm_swipe_now_ns())) { [view swipeArm]; return; }
+        [view swipeEnd:YES];
+    });
+}
+- (void)swipeEnd:(BOOL)lift {
+    if (!_swipe.active) return;
+    if (lift) dm_touch_set_from(NULL, 0, DM_CONTACT_MAC_SWIPE);
+    else dm_touch_cancel_from(DM_CONTACT_MAC_SWIPE);   // never lift: a lift could arrive as the game's Tap
+    dm_swipe_end(&_swipe);
 }
 // The drawable follows the view in pixels: a layer assigned to a layer-backed view kept the drawable at the first window's 1280x720 in fullscreen too, so the game picture was
 // scaled down to it and up again by the compositor

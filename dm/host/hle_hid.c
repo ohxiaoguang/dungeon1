@@ -479,6 +479,28 @@ int dm_mouse_snapshot(dm_pointer_snapshot *out) {
     pthread_mutex_unlock(&g_mouse_mu);
     return 1;
 }
+// Front-end cursor (dm_input.h): one position, no buttons, no HID state and no sampling. It exists so the iOS
+// virtual trackpad can move the game's pointer without a touch (and therefore without the click a touch's Tap
+// carries); a title adapter must ask for it explicitly, so every other game sees exactly what it saw before.
+static pthread_mutex_t g_cursor_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct { uint64_t revision; int x, y, connected; } g_cursor;
+void dm_cursor_set(int connected, float x, float y) {
+    if (!connected || !isfinite(x) || !isfinite(y)) return;
+    int px, py; dm_panel_point(x, y, &px, &py);   // the same conversion the touch states and gesture entries use
+    pthread_mutex_lock(&g_cursor_mu);
+    if (!g_cursor.connected || g_cursor.x != px || g_cursor.y != py) {
+        g_cursor.x = px; g_cursor.y = py; g_cursor.connected = 1; g_cursor.revision++;
+    }
+    pthread_mutex_unlock(&g_cursor_mu);
+}
+int dm_cursor_snapshot(dm_pointer_snapshot *out) {
+    if (!out) return 0;
+    pthread_mutex_lock(&g_cursor_mu);
+    *out = (dm_pointer_snapshot){g_cursor.revision, g_cursor.x, g_cursor.y, g_cursor.connected, 0};
+    int any = g_cursor.revision != 0;
+    pthread_mutex_unlock(&g_cursor_mu);
+    return any;
+}
 static int32_t mouse_wheel(double *value) {
     double whole = trunc(*value);
     int32_t n = whole >= INT32_MAX ? INT32_MAX : whole <= INT32_MIN ? INT32_MIN : (int32_t)whole;

@@ -2,6 +2,29 @@
 // A0 B1 X2 Y3 StickL4 StickR5 L6 R7 ZL8 ZR9 Plus10 Minus11 Left12 Up13 Right14 Down15; sticks ±32767.
 #pragma once
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+// The panel coordinate (1280x720, origin top left) a normalized front-end position means. The touch states, the
+// gesture entries and the game's own pointer all use this panel, so both the cursor channel and anything else that
+// publishes a position convert with this one function - the trackpad's Tap and its hover must land on the same pixel.
+static inline void dm_panel_point(float x, float y, int *px, int *py) {
+    int32_t ix = (int32_t)(fminf(fmaxf(x, 0.f), 1.f) * 1280.f), iy = (int32_t)(fminf(fmaxf(y, 0.f), 1.f) * 720.f);
+    *px = ix > 1279 ? 1279 : ix;
+    *py = iy > 719 ? 719 : iy;
+}
+
+// The touch screen's own switch (DM_TOUCH_INPUT), read by the iOS overlay and by a title adapter that needs the
+// same answer. The launcher writes one of these values; a build that only had the on/off switch saved "1" or "0",
+// and both keep meaning what they meant then, so an older choice is never reinterpreted.
+enum { DM_TOUCH_INPUT_OFF = 0, DM_TOUCH_INPUT_ON = 1, DM_TOUCH_INPUT_TRACKPAD = 2 };
+#define DM_TOUCH_INPUT_TRACKPAD_VALUE "trackpad"
+static inline int dm_touch_input_mode(const char *value) {
+    if (!value || !*value) return DM_TOUCH_INPUT_ON;          // unset: the touch screen as it always was
+    if (!strcmp(value, DM_TOUCH_INPUT_TRACKPAD_VALUE)) return DM_TOUCH_INPUT_TRACKPAD;
+    return atoi(value) != 0 ? DM_TOUCH_INPUT_ON : DM_TOUCH_INPUT_OFF;
+}
 // Button bits (= nn::hid::NpadButton bit order; the DM_KEYS key-name table in hle_hid.c is generated from here). Frontends always compose buttons from these names.
 enum {
     DM_BTN_A = 1u << 0, DM_BTN_B = 1u << 1, DM_BTN_X = 1u << 2, DM_BTN_Y = 1u << 3,
@@ -33,6 +56,13 @@ void dm_mouse_scroll(double x, double y); // signed AppKit wheel units; fraction
 // revision; reading this never creates a sample, touch, gesture, or button edge.
 typedef struct { uint64_t revision; int x, y, connected; uint32_t buttons; } dm_pointer_snapshot;
 int dm_mouse_snapshot(dm_pointer_snapshot *out);
+
+// Optional front-end cursor: a position and nothing else (the iOS virtual trackpad, DmGamepad.m). It is not a
+// touch, a gesture, a button or a Mouse HID sample, so publishing it changes nothing for any game that does not
+// ask for it: only a title adapter that was given the cursor may read it (hle_dd_pointer_ios.c). Normalized
+// coordinates with the top-left origin, as dm_mouse_set takes them; the snapshot is in the game's 1280x720 panel.
+void dm_cursor_set(int connected, float x, float y);
+int dm_cursor_snapshot(dm_pointer_snapshot *out);   // 0 until the front end has published one
 
 // AppKit coordinates are view points, not backing pixels. Normalizing the centered
 // 16:9 picture makes this invariant under Retina, resizing and fullscreen.
