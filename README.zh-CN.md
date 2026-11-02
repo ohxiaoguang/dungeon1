@@ -18,9 +18,14 @@ Dungeon1 是基于 [seedds/nxnative](https://github.com/seedds/nxnative) 开发�
 ## 主要功能
 
 继承原生 ARM64 Host 重写能力，以 Metal 实现本作的 OpenGL 调用。提供单游戏启动器、
-存档、外部 MOD、Mac Mouse HID / Pointer Bridge Hover 和 iPhone/iPad 虚拟手柄。
-实验触控策略默认开启、可关闭：包含战斗/扎营技能长按、城镇头像长按，普通与 DLC
-饰品商店短按聚焦、长按后松手执行一次原生购买。余额、库存和容量仍由游戏检查。
+存档、外部 MOD、Mac Mouse HID / Pointer Bridge Hover，以及 iPhone/iPad 三种操作方式：
+**虚拟手柄**、**直接触控**、带独立光标的**虚拟触控板**。双指滑动——无论在 iPad 屏幕上
+还是 MacBook 触控板上——都会转换为游戏自身的触摸拖动，列表与火炬都靠它响应。
+实验触控策略默认关闭（启动器 → 高级）：包含战斗/扎营技能长按、城镇头像长按，普通与
+DLC 饰品商店短按聚焦、长按后松手执行一次原生购买。余额、库存和容量仍由游戏检查。
+
+**怎么玩：**完整手势、启动器设置与已知限制见 **[操作说明](docs/input-controls.md)**
+（[English](docs/input-controls.en.md)）。
 
 正式**灯笼图标**已纳入源码并作为两平台默认图标。设置内新增**关于 Dungeon1**，
 显示同一图标、应用元数据版本/构建号、中英文介绍和有效的源码/许可链接，跟随系统

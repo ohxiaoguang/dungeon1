@@ -1,5 +1,9 @@
 # Dungeon1 user guide
 
+> This guide covers installation, resources and every setting. For the gestures themselves - what a tap, a swipe or a
+> two-finger drag does in each input mode - see **[Controls](input-controls.md)**
+> ([English](input-controls.en.md)).
+
 ## macOS
 
 Open Dungeon1.app. In bundled mode the launcher identifies its included resources
@@ -8,10 +12,34 @@ App intact. Saves/logs/temp are under `Dungeon1-01008F1008DA6000` in that folder
 Errors stay in the launcher and the run log. The App is locally ad-hoc signed, not
 notarized. No other project checkout is used at runtime.
 
-Mouse HID and Pointer Bridge default on. A left click gives touch/pointer ownership;
-physical mouse motion then drives hover/Tooltip. Controller input keeps controller
-focus until the next click. Left click, dragging, wheel and gamepad remain available.
-The experimental town-roster hold is enabled with the touch policy.
+Mouse HID and the Pointer Bridge default on and are one switch, **Experimental mouse
+control**, in the everyday settings - not behind Advanced. A left click gives
+touch/pointer ownership; physical mouse motion then drives hover/Tooltip. Controller input
+keeps controller focus until the next click. Left click, dragging, wheel and gamepad
+remain available. Turning the switch off clears both variables and restores the untouched
+mouse and touch behaviour; a pair saved as two different values by an earlier build keeps
+its own two switches under the merged one instead of being folded together.
+
+**A two-finger trackpad swipe is the game's own touch drag.** The game reads no mouse, so
+its torch and its lists only answer to a finger; the front end therefore opens one synthetic
+contact at the mouse pointer and moves it with the swipe, which is exactly what a finger drag
+does there - two fingers down pulls the torch down. The mouse itself does not move, no button
+is pressed, and a left-button drag keeps the input to itself: the swipe stops while it is
+held. The contact ends when the gesture ends, when nothing has arrived for 300 ms (a
+phase-less device, or a stalled trackpad) or when the window loses focus; inertia is never
+fed to the game, so lifting the fingers never keeps dragging. This applies to Dungeon1 only -
+every other game's mouse and wheel behaviour is untouched.
+
+**Settings are grouped.** Everyday: console mode, the mouse control above, then the
+interface language. Everything else is inside one collapsed **Advanced** block - the
+frame-rate counter, game rumble (with the strength underneath it, only while rumble is on),
+the performance HUD and the experimental touch interaction policy - all off on a first
+install. Click anywhere on the Advanced row (its title, the empty space or the chevron) to
+open or close it.
+
+The **game language** no longer has a row: the value the app was built with, or the one an
+earlier version saved, is still kept and handed to the game. Change it with `DM_LANG` in
+the app's `env.txt` if you need another language.
 
 ## iPhone and iPad
 
@@ -21,7 +49,60 @@ its bundled data and retains the inherited resource import/error presentation,
 controller preferences and storage controls. External mode asks for matching owned
 containers and keys; keep those private. Data remains in this app's Documents.
 
-The touch policy defaults on. Short tap combat/camping skills to focus; hold to
+**Input mode** is one choice in the launcher (Settings → Input mode), and the option that
+belongs to the chosen mode sits directly under it:
+
+- **Virtual gamepad** (the default, unchanged): the pad over the picture. Buttons, sticks,
+  the layout button and the three layouts work exactly as before, and touches no control
+  takes still reach the game. Its own option is **Disable touch input** (off by default):
+  on, the game is sent no ordinary touch input while the pad, its layouts and a physical
+  controller keep working.
+- **Direct touch**: no pad; every touch is the game's own touch screen. Its own option is
+  the **touch interaction policy** (off by default; see below). The policy is one shared
+  switch for the whole app - it also governs the gamepad mode and the trackpad, so its
+  saved value keeps applying if you switch mode, and it is only ever shown here.
+- **Virtual trackpad**: the whole screen is a trackpad, and its own option is the **pointer
+  speed** (1.0× by default, 0.5×-2.0×): a gain on the pointer's travel only - it never moves
+  where a tap clicks and never changes a gesture's classification.
+
+  A finger that is only **down** publishes nothing at all. **Swiping** moves the pointer and
+  nothing else, and the pointer stays where the finger left it. A **quick tap** publishes one
+  contact at the pointer - down and up in the same turn - which is the game's own Tap and
+  therefore its click; two quick taps are its own double click. A **long press** publishes
+  nothing, however long the finger rests, so pointing at an item and touching the glass again
+  can no longer pick it up, drag it, buy it or toggle it. **Two fingers that pause** for about
+  a third of a second and then move carry the item under the pointer: the contact starts where
+  the pointer is and follows it, and the pointer turns orange while it is carried. Lifting
+  either finger ends the drag. **Two fingers that move straight away** are the game's own
+  touch drag: one contact at the pointer that follows the fingers, which is what pulls the
+  torch down and what scrolls a list. It never clicks, and because the game treats it as a
+  finger drag it picks an item up if the pointer is on one - the same item a pause-then-drag
+  would carry, without needing the pause. The two states stay separate in the app (a gesture
+  cannot change into the other), but the game receives the same kind of touch from both.
+
+  The game's own UI draws no pointer for touch input, so the app draws one: a white arrow with
+  a dark outline whose tip is exactly the coordinate the game clicks with (it follows the
+  letterboxed 16:9 picture, rotation and a resized window). The arrow belongs to the
+  launcher's overlay - it never takes part in hit testing and sends no input. Moving the
+  pointer needs the same prepared 1.3.0 modules as the Mac bridge; the log says
+  `DD pointer-only trackpad handoff: enabled` when it is in effect, and clicks keep working
+  either way (a tap stores its own point, so the arrow and the click still agree).
+
+  The small question mark beside **Input mode** opens the same instructions in the app, in the
+  chosen language, with the other two modes a tap away.
+
+A pair saved by an earlier version that is none of these three (no pad and no touch input)
+is shown as **Kept from an earlier version** and left exactly as saved; choosing a mode
+replaces it. The three modes are exclusive by construction - they are three values of the
+same two variables - so no two of them ever run together. The right-stick detail is under
+Advanced and is disabled while the gamepad is not the mode (its saved value is kept).
+
+Everything else is inside the collapsed **Advanced** block, off on a first install: game
+rumble (strength underneath, only while rumble is on), the frame-rate counter, the
+performance HUD, touch feedback and the 3D right stick. **Game language** no longer has a
+row - the built or saved value is still applied; `DM_LANG` in `env.txt` changes it.
+
+With the touch policy on, short tap combat/camping skills to focus; hold to
 request their native operation. Hold a town hero portrait about half a second and
 lift for its details. Both Nomad and Comet shops use short tap for Tooltip and
 price, hold at least 0.5 seconds then lift for **one** native purchase. The game
@@ -29,9 +110,10 @@ still decides balance, stock and capacity. Moving beyond the slop, cancelling,
 using multiple fingers or losing input ownership disarms the contact. Close the
 shop and reopen it if its state changes while interacting.
 
-The virtual controller remains available; its touchscreen-input switch and overlay
-visibility switch are separate. Change layouts using the inherited pad controls.
-External controllers retain their configuration and ownership isolation.
+The gamepad mode keeps every control the earlier build had; change layouts using the
+inherited pad controls. External controllers retain their configuration and ownership
+isolation, and they work in all three input modes (the trackpad only decides where the
+pointer goes).
 
 ## Saves and migration
 

@@ -219,3 +219,27 @@
   drag. The help sheet and the user guide say what the swipe does, in both languages.
 - **Both artifacts are rebuilt in bundled/Directory resource mode**: the Mac App carries RomFS, Shaders, the patched
   modules and all DLC and needs no external container; the IPA carries the same and needs no Files import.
+
+## Player-facing controls guide — 2026-11-02
+
+`docs/input-controls.md` (and its English twin `docs/input-controls.en.md`) is now the place players look for the
+gestures: it covers the three iPhone/iPad input modes, the Mac mouse and trackpad, every launcher setting with its
+default, the known limitations and a FAQ. The READMEs link to it and `docs/user-guide.md` points at it for gestures
+(the guide keeps installation and the full setting reference).
+
+Summary of what this round changed, in the order a player meets it:
+
+- **Trackpad input isolation:** a single finger that is only down sends the game nothing, so re-touching the glass to
+  keep moving the pointer can no longer pick an item up; a tap is one click at the pointer and a long press is inert.
+- **Two-finger swipe and drag:** a swipe publishes the game's own touch drag (torch, lists) and a pause first then a
+  move is the deliberate drag of the item under the pointer. Both drag an item when the pointer is on one - that is the
+  game's own behaviour - and the app never turns one gesture into the other.
+- **Mac trackpad:** a two-finger scroll becomes the same native touch drag at the mouse pointer, without moving the
+  pointer, pressing a button or disturbing the existing click / press-drag / hover paths.
+- **Launcher help:** the question mark beside Input mode opens a bilingual, per-mode guide inside the app.
+- **Automatic tests:** `t_trackpad.c` (29 checks) and `t_swipe.c` (24) drive the real touch layer in
+  `make -C dm/host/tests run`; `test_mac_swipe_wiring.py`, `test_trackpad_policy.py`, the launcher setting checks and
+  the launcher semantics tests cover the rest.
+- **Bundled builds verified:** both delivery artifacts were rebuilt in Directory/bundled resource mode and checked -
+  the Mac App carries RomFS, Shaders, the patched modules and all five DLC and boots into the game; the IPA carries
+  the same behind `DMResourceBackend=directory` and needs no file import.

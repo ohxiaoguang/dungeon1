@@ -20,10 +20,16 @@ This community project is not an official Red Hook Studios, Nintendo or Apple pr
 
 The inherited host rewrites kernel-incompatible ARM64 operations and implements
 this game's OpenGL on Metal. Dungeon1 provides a single-game launcher, saves,
-external MODs, Mac Mouse HID / Pointer Bridge Hover and the iPhone/iPad virtual
-controller. The switchable experimental touch policy defaults on: combat/camping
+external MODs, Mac Mouse HID / Pointer Bridge Hover, and three iPhone/iPad input
+modes: **virtual gamepad**, **direct touch** and a **virtual trackpad** with its own
+pointer. A two-finger swipe - on the iPad glass or on a MacBook trackpad - becomes
+the game's own touch drag, which is what the lists and the torch answer to. The
+experimental touch policy is off by default (launcher → Advanced): combat/camping
 holds, town-roster long press, and short-focus / hold-and-release native purchases
 on both wagon pages. Balance, stock and capacity remain the game's decisions.
+
+**Playing it:** see **[Controls](docs/input-controls.en.md)** ([简体中文](docs/input-controls.md))
+for every gesture, what each launcher setting does, and the known limitations.
 
 The official **lantern icon** is included and is the default on both platforms.
 Settings include **About Dungeon1**, with that icon, metadata version/build,
