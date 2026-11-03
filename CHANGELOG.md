@@ -243,3 +243,25 @@ Summary of what this round changed, in the order a player meets it:
 - **Bundled builds verified:** both delivery artifacts were rebuilt in Directory/bundled resource mode and checked -
   the Mac App carries RomFS, Shaders, the patched modules and all five DLC and boots into the game; the IPA carries
   the same behind `DMResourceBackend=directory` and needs no file import.
+
+## Touch interaction update — 2026-11-03
+
+- User device acceptance passed for guild skill initial unlocks and upgrades, blacksmith
+  weapons/armour, camping trainer skills and building upgrade trees: tap to inspect,
+  hold at least 0.5 s and release to purchase once. The game's own eligibility,
+  payment and notification paths remain intact.
+- Filter the shared UpgradeTree purchase entries before mutation. Initial unlocks are
+  identified by the tree's bound description callback, including rows whose tooltip
+  has not rendered yet. Retain main/SDK Build ID, instruction and vtable guards.
+- Restore virtual-trackpad single-finger hold without publishing touch on initial down;
+  consolidate two-finger motion into one swipe path. No tap is added on hold/swipe release.
+- Reset touch policy, touch-disable and pointer speed when the input mode actually changes;
+  retain settings when reopening the same mode and honor env-file locks. The user has
+  completed device acceptance of these trackpad and launcher changes.
+- Shorten the launcher touch-policy note; detailed gestures remain in the bilingual
+  input mode guide and controls documentation.
+- Validation: 180 focused Host policy checks passed; iOS and Mac compile checks passed.
+  Automated checks supplement the user's device acceptance.
+- The dungeon hero-status overlay is not implemented: dungeon selection, HP/stress fields
+  and lifecycle transitions remain unverified. Record findings and blockers in
+  `docs/darkest-dungeon-hero-status-audit.md`; do not display guessed or stale hero data.

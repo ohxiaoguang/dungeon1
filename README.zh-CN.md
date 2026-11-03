@@ -21,8 +21,10 @@ Dungeon1 是基于 [seedds/nxnative](https://github.com/seedds/nxnative) 开发�
 存档、外部 MOD、Mac Mouse HID / Pointer Bridge Hover，以及 iPhone/iPad 三种操作方式：
 **虚拟手柄**、**直接触控**、带独立光标的**虚拟触控板**。双指滑动——无论在 iPad 屏幕上
 还是 MacBook 触控板上——都会转换为游戏自身的触摸拖动，列表与火炬都靠它响应。
-实验触控策略默认关闭（启动器 → 高级）：包含战斗/扎营技能长按、城镇头像长按，普通与
-DLC 饰品商店短按聚焦、长按后松手执行一次原生购买。余额、库存和容量仍由游戏检查。
+实验触控策略默认关闭（iPhone/iPad 启动器 → 直接触控）：包含战斗/扎营技能长按、城镇头像长按，普通与
+DLC 饰品商店、公会技能初次解锁与升级、铁匠铺武器/护甲、扎营训练师及建筑升级树的轻点查看、长按后松手购买一次。
+这些升级操作及本轮触控板手势、模式切换重置均已由用户完成设备验收；余额、等级和其他购买条件仍由游戏检查。
+地牢英雄状态栏尚未实现，原因见[可行性报告](docs/darkest-dungeon-hero-status-audit.md)。
 
 **怎么玩：**完整手势、启动器设置与已知限制见 **[操作说明](docs/input-controls.md)**
 （[English](docs/input-controls.en.md)）。

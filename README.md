@@ -24,9 +24,13 @@ external MODs, Mac Mouse HID / Pointer Bridge Hover, and three iPhone/iPad input
 modes: **virtual gamepad**, **direct touch** and a **virtual trackpad** with its own
 pointer. A two-finger swipe - on the iPad glass or on a MacBook trackpad - becomes
 the game's own touch drag, which is what the lists and the torch answer to. The
-experimental touch policy is off by default (launcher → Advanced): combat/camping
-holds, town-roster long press, and short-focus / hold-and-release native purchases
-on both wagon pages. Balance, stock and capacity remain the game's decisions.
+experimental touch policy is off by default (iPhone/iPad launcher → Direct touch): combat/camping
+holds, town-roster long press, and tap-to-inspect / hold-and-release purchases
+in both wagon pages, guild skills (initial unlock and upgrades), blacksmith weapon/armour,
+camping trainer and building upgrade trees. These upgrade interactions and the revised
+trackpad gestures/mode-switch resets have user device acceptance. Balance, level requirements
+and other purchase conditions remain the game's decisions. The proposed dungeon hero-status
+overlay is not implemented; see the [feasibility assessment](docs/darkest-dungeon-hero-status-audit.md).
 
 **Playing it:** see **[Controls](docs/input-controls.en.md)** ([简体中文](docs/input-controls.md))
 for every gesture, what each launcher setting does, and the known limitations.

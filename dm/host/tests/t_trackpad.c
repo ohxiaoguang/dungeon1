@@ -7,7 +7,9 @@
 //     under the pointer), so the game's touch state is empty and its gesture history does not move;
 //   · a tap publishes one contact at the cursor, down and up in the same turn (two publications, no frame between),
 //     which the touch layer reports as Start then End and the recognizer as Touch then Tap - one click, at the cursor;
-//   · a drag publishes one contact at the cursor and moves it, which is Touch then Pan then Complete - no Tap.
+//   · a drag publishes one contact at the cursor and moves it, which is Touch then Pan then Complete - no Tap;
+//   · a still finger opens one contact only after the hold window, and holding it past the game's own 0.5 s Press
+//     threshold is what produces Press: the release of that contact is Complete, never a Tap.
 // So the checks below are about what the game can see: a Tap carries the CURSOR (never the glass), a long still finger
 // produces no contact at all, a drag never clicks, and a cancelled drag never lifts.
 //
@@ -116,6 +118,27 @@ int main(void) {
     check("drag: the release ends it without a Tap", (g[0].type == COMPLETE || g[0].type == SWIPE) && !ctx_has(drag_ctx, TAP));
     check("drag: no Press ever appeared in it", !ctx_has(drag_ctx, PRESS));
     rd(3 * S + 64 * MS);
+
+    // ---- 3b. A hold: one contact, opened late, that reaches the game's own Press and ends without a Tap -------
+    // This is what the overlay publishes when a single finger has stayed still for 0.5 s (DmGamepad.m holdTick). The
+    // contact is opened only then, so nothing exists while the finger is merely resting on the glass.
+    down(0.5f, 0.5f); rd(5 * S);
+    int64_t hold_ctx = ctx_top();
+    check("hold: the contact opens at the cursor (640,360)", newest_is(TOUCH, 640, 360));
+    usleep(560 * 1000);                       // the title's own 0.5 s Press clock, measured from that contact
+    rd(5 * S + 600 * MS);
+    check("hold: holding it past 0.5 s is the game's Press", newest_is(PRESS, 640, 360));
+    check("hold: and the contact snapshot agrees", now_snap().phase == DM_CONTACT_PRESS);
+    lift(); rd(5 * S + 620 * MS);
+    check("hold: its release is Complete, not a Tap", g[0].type == COMPLETE && !ctx_has(hold_ctx, TAP));
+    rd(5 * S + 640 * MS);
+
+    // ---- 3c. A hold that is cancelled (focus loss, a moved finger, a second finger) never becomes a Tap -------
+    down(0.4f, 0.4f); rd(5 * S + 800 * MS);
+    dm_touch_cancel_from(DM_CONTACT_IOS); rd(5 * S + 816 * MS);
+    check("hold cancel: it is reported as CANCEL with no point", gn > 0 && g[0].type == CANCEL && g[0].npt == 0);
+    check("hold cancel: the contact is left CANCELLED", now_snap().phase == DM_CONTACT_CANCELLED);
+    rd(5 * S + 840 * MS);
 
     // ---- 4. A cancelled drag is cancelled, never lifted ---------------------------------------------------
     down(0.5f, 0.5f); rd(4 * S);

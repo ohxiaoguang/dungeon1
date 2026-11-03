@@ -58,27 +58,24 @@ belongs to the chosen mode sits directly under it:
   on, the game is sent no ordinary touch input while the pad, its layouts and a physical
   controller keep working.
 - **Direct touch**: no pad; every touch is the game's own touch screen. Its own option is
-  the **touch interaction policy** (off by default; see below). The policy is one shared
-  switch for the whole app - it also governs the gamepad mode and the trackpad, so its
-  saved value keeps applying if you switch mode, and it is only ever shown here.
+  the **touch interaction policy** (off by default; see below), shown only here; changing the
+  input mode turns it off so it cannot keep acting where it is not shown.
 - **Virtual trackpad**: the whole screen is a trackpad, and its own option is the **pointer
   speed** (1.0× by default, 0.5×-2.0×): a gain on the pointer's travel only - it never moves
   where a tap clicks and never changes a gesture's classification.
 
-  A finger that is only **down** publishes nothing at all. **Swiping** moves the pointer and
-  nothing else, and the pointer stays where the finger left it. A **quick tap** publishes one
-  contact at the pointer - down and up in the same turn - which is the game's own Tap and
-  therefore its click; two quick taps are its own double click. A **long press** publishes
-  nothing, however long the finger rests, so pointing at an item and touching the glass again
-  can no longer pick it up, drag it, buy it or toggle it. **Two fingers that pause** for about
-  a third of a second and then move carry the item under the pointer: the contact starts where
-  the pointer is and follows it, and the pointer turns orange while it is carried. Lifting
-  either finger ends the drag. **Two fingers that move straight away** are the game's own
-  touch drag: one contact at the pointer that follows the fingers, which is what pulls the
-  torch down and what scrolls a list. It never clicks, and because the game treats it as a
-  finger drag it picks an item up if the pointer is on one - the same item a pause-then-drag
-  would carry, without needing the pause. The two states stay separate in the app (a gesture
-  cannot change into the other), but the game receives the same kind of touch from both.
+  A finger that is only **down** publishes nothing at all, so pointing at an item and touching
+  the glass again cannot pick it up by accident. **Swiping** moves the pointer and nothing else,
+  and the pointer stays where the finger left it. A **quick tap** publishes one contact at the
+  pointer - down and up in the same turn - which is the game's own Tap and therefore its click;
+  two quick taps are its own double click. A finger held still for 0.5 s becomes the game's own
+  hold: one contact is put down at the pointer (the arrow turns orange) and stays down, so after
+  the game's own 0.5 s threshold its Press is reached - hold to buy, hold to toggle a skill.
+  Moving cancels that contact instead of dragging with it, and a release before the threshold
+  withdraws it instead of clicking. **Two fingers** are the game's own touch drag: as soon as
+  they move, one contact opens at the pointer and follows them, which is what pulls the torch
+  down and what scrolls a list - and it picks an item up if the pointer is on one. There is no
+  pause to learn: both used to exist and produced the same contact, so there is now one path.
 
   The game's own UI draws no pointer for touch input, so the app draws one: a white arrow with
   a dark outline whose tip is exactly the coordinate the game clicks with (it follows the
@@ -90,6 +87,11 @@ belongs to the chosen mode sits directly under it:
 
   The small question mark beside **Input mode** opens the same instructions in the app, in the
   chosen language, with the other two modes a tap away.
+
+**Changing the input mode resets the mode's own option.** Switching modes returns disable touch,
+the touch policy and the pointer speed to their defaults, so an option the previous mode left
+behind cannot keep acting in the new one. Opening the launcher, or re-selecting the mode already
+set, changes nothing, and every value is still saved as usual.
 
 A pair saved by an earlier version that is none of these three (no pad and no touch input)
 is shown as **Kept from an earlier version** and left exactly as saved; choosing a mode
@@ -105,7 +107,9 @@ row - the built or saved value is still applied; `DM_LANG` in `env.txt` changes 
 With the touch policy on, short tap combat/camping skills to focus; hold to
 request their native operation. Hold a town hero portrait about half a second and
 lift for its details. Both Nomad and Comet shops use short tap for Tooltip and
-price, hold at least 0.5 seconds then lift for **one** native purchase. The game
+price, hold at least 0.5 seconds then lift for **one** native purchase. In the guild,
+a tap on a skill row only focuses it (name, price, description) and a 0.5 s hold buys it
+once. The same policy now covers recognized blacksmith weapon/armour, camping trainer and building upgrade trees. The user has completed device acceptance of guild unlocks/upgrades and the added facilities. The game
 still decides balance, stock and capacity. Moving beyond the slop, cancelling,
 using multiple fingers or losing input ownership disarms the contact. Close the
 shop and reopen it if its state changes while interacting.

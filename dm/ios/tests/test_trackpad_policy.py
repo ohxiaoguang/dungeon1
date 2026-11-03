@@ -45,10 +45,10 @@ int main(void) {
     assert(dm_touch_input_mode(DM_TOUCH_INPUT_TRACKPAD_VALUE) == DM_TOUCH_INPUT_TRACKPAD);
     assert(dm_touch_input_mode("Trackpad") == DM_TOUCH_INPUT_OFF);  /* the value is exact, never case-folded */
 
-    /* The tap window must stay under the recognizer's 0.5 s Press threshold, and the drag pause under the tap
-       window: a release can then never manufacture a contact the game would have promoted to Press. */
-    assert(DM_TRACKPAD_TAP_NS < 500000000ull);
-    assert(DM_TRACKPAD_DRAG_HOLD_NS < DM_TRACKPAD_TAP_NS);
+    /* The tap window is under the hold window, and the hold is the recognizer's own 0.5 s Press threshold: a release
+       can then never manufacture a contact the game would have promoted to Press. */
+    assert(DM_TRACKPAD_TAP_NS < DM_TRACKPAD_HOLD_NS);
+    assert(DM_TRACKPAD_HOLD_NS == 500000000ull);
 
     const float slop = dm_trackpad_slop(1280);   /* the recognizer's threshold, in points at full picture size */
     dm_tp_gesture g; float dx = 0, dy = 0;
@@ -57,8 +57,15 @@ int main(void) {
     dm_tp_reset(&g);
     assert(dm_tp_down(&g, 0, 1, 400, 300, 0, 0) == DM_TP_NONE);
     assert(g.state == DM_TP_SINGLE);
+    assert(dm_tp_hold(&g, 100 * MS) == DM_TP_NONE);      /* the hold window has not passed yet */
     assert(dm_tp_up(&g, 120 * MS, 0) == DM_TP_CLICK);
     assert(g.state == DM_TP_IDLE);
+
+    /* 1b. A tap's timer must not turn into a hold afterwards: the gesture is gone. */
+    dm_tp_reset(&g);
+    dm_tp_down(&g, 0, 1, 400, 300, 0, 0);
+    dm_tp_up(&g, 120 * MS, 0);
+    assert(dm_tp_hold(&g, 900 * MS) == DM_TP_NONE);
 
     /* 2. A wobble inside the slop is still that tap. */
     dm_tp_reset(&g);
@@ -66,117 +73,113 @@ int main(void) {
     assert(dm_tp_move(&g, 10 * MS, 1, 400 + slop * 0.9f, 300 + slop * 0.9f, 0, 0, slop, &dx, &dy) == DM_TP_NONE);
     assert(dm_tp_up(&g, 200 * MS, 0) == DM_TP_CLICK);
 
-    /* 3. Leaving the slop moves the cursor and can never click: the first move reports the whole offset from where
-       the finger went down (no travel is lost at the crossing), every later one its own delta. */
+    /* 3. Leaving the slop moves the cursor and can never click or hold: the first move reports the whole offset from
+       where the finger went down, every later one its own delta. */
     dm_tp_reset(&g);
     dm_tp_down(&g, 0, 1, 400, 300, 0, 0);
     assert(dm_tp_move(&g, 16 * MS, 1, 400, 300 + slop + 0.5f, 0, 0, slop, &dx, &dy) == DM_TP_CURSOR);
     assert(dx == 0 && fabsf(dy - (slop + 0.5f)) < 1e-4f);
     assert(dm_tp_move(&g, 33 * MS, 1, 410, 320, 0, 0, slop, &dx, &dy) == DM_TP_CURSOR);
     assert(dx == 10 && fabsf(dy - (20 - (slop + 0.5f))) < 1e-4f);
-    assert(dm_tp_up(&g, 100 * MS, 0) == DM_TP_NONE);              /* a swipe never clicks */
+    assert(dm_tp_hold(&g, 900 * MS) == DM_TP_NONE);      /* a moving finger is never a hold */
+    assert(dm_tp_up(&g, 1000 * MS, 0) == DM_TP_NONE);    /* and a swipe never clicks */
 
-    /* 4. A still finger held past the tap window is inert, however long it stays and whenever it lifts: this is what
-       used to become the game's Press and start a pickup, a purchase or a skill toggle. */
-    dm_tp_reset(&g);
-    assert(dm_tp_down(&g, 0, 1, 640, 360, 0, 0) == DM_TP_NONE);
-    assert(dm_tp_up(&g, 600 * MS, 0) == DM_TP_NONE);
-    assert(dm_tp_up(&g, 3000 * MS, 0) == DM_TP_NONE);             /* the same answer on a second release */
-
-    /* 5. A long hold that then moves is a cursor move, and its release still publishes nothing. */
+    /* 4. A still finger past the hold window opens ONE contact at the pointer - this is the game's own long press.
+       Releasing it before the game's Press threshold cancels it (a lift there could arrive as a Tap), and releasing
+       it later lifts it so the game can end the hold itself. */
     dm_tp_reset(&g);
     dm_tp_down(&g, 0, 1, 640, 360, 0, 0);
-    assert(dm_tp_move(&g, 700 * MS, 1, 640, 360 + slop + 1, 0, 0, slop, &dx, &dy) == DM_TP_CURSOR);
+    assert(dm_tp_hold(&g, 400 * MS) == DM_TP_NONE);
+    assert(dm_tp_hold(&g, 520 * MS) == DM_TP_HOLD_DOWN);
+    assert(g.state == DM_TP_HOLDING);
+    assert(dm_tp_hold(&g, 600 * MS) == DM_TP_NONE);      /* it opens once, not once per tick */
+    assert(dm_tp_up(&g, 700 * MS, 0) == DM_TP_CONTACT_CANCEL);   /* only 0.18 s of contact: no Press yet */
+    dm_tp_reset(&g);
+    dm_tp_down(&g, 0, 1, 640, 360, 0, 0);
+    assert(dm_tp_hold(&g, 520 * MS) == DM_TP_HOLD_DOWN);
+    assert(dm_tp_up(&g, 1100 * MS, 0) == DM_TP_HOLD_UP);          /* the contact outlived the Press threshold */
+
+    /* 5. Moving out of a hold cancels the contact instead of dragging with it, and the gesture then ignores the
+       finger until it lifts. */
+    dm_tp_reset(&g);
+    dm_tp_down(&g, 0, 1, 640, 360, 0, 0);
+    assert(dm_tp_hold(&g, 520 * MS) == DM_TP_HOLD_DOWN);
+    assert(dm_tp_move(&g, 600 * MS, 1, 640, 360 + slop + 1, 0, 0, slop, &dx, &dy) == DM_TP_CONTACT_CANCEL);
+    assert(g.state == DM_TP_CANCELLED);
+    assert(dm_tp_move(&g, 700 * MS, 1, 640, 400, 0, 0, slop, &dx, &dy) == DM_TP_NONE);
     assert(dm_tp_up(&g, 800 * MS, 0) == DM_TP_NONE);
 
-    /* 6. Two fingers that move before the pause are a swipe: one contact at the pointer, following the fingers - the
-       game's own touch drag, which is what its lists and the torch answer to. It is a separate state from the drag,
-       so it can never turn into one (or into a click), and its release lifts the contact. */
+    /* 6. A second finger during a hold cancels it: a hold and a two-finger swipe never mix. */
+    dm_tp_reset(&g);
+    dm_tp_down(&g, 0, 1, 640, 360, 0, 0);
+    assert(dm_tp_hold(&g, 520 * MS) == DM_TP_HOLD_DOWN);
+    assert(dm_tp_down(&g, 600 * MS, 2, 640, 360, 800, 500) == DM_TP_CONTACT_CANCEL);
+    assert(g.state == DM_TP_CANCELLED);
+
+    /* 7. Two fingers: one contact at the pointer, following their midpoint - the game's own touch drag. */
     dm_tp_reset(&g);
     assert(dm_tp_down(&g, 0, 1, 300, 300, 0, 0) == DM_TP_NONE);
     assert(dm_tp_down(&g, 40 * MS, 2, 300, 300, 500, 400) == DM_TP_NONE);
     assert(g.state == DM_TP_TWO);
     assert(dm_tp_move(&g, 60 * MS, 2, 300, 300 - (slop + 2), 500, 400 - (slop + 2), slop, &dx, &dy) == DM_TP_SWIPE_DOWN);
-    assert(g.state == DM_TP_SCROLL);
-    assert(dx == 0 && dy == -(slop + 2));                     /* the travel past the slop, from the two-finger pivot */
+    assert(g.state == DM_TP_SWIPE);
+    assert(dx == 0 && dy == -(slop + 2));                     /* the travel past the slop, from the midpoint */
     assert(dm_tp_move(&g, 100 * MS, 2, 300, 260, 500, 360, slop, &dx, &dy) == DM_TP_SWIPE_MOVE);
     assert(dx == 0 && dy == -29);                             /* and then each move's own delta */
-    assert(dm_tp_move(&g, 2000 * MS, 2, 300, 200, 500, 300, slop, &dx, &dy) == DM_TP_SWIPE_MOVE);   /* never a drag */
-    assert(dm_tp_up(&g, 2100 * MS, 1) == DM_TP_SWIPE_UP);
-    assert(dm_tp_up(&g, 2200 * MS, 0) == DM_TP_NONE);
+    assert(dm_tp_up(&g, 200 * MS, 1) == DM_TP_SWIPE_UP);
+    assert(dm_tp_up(&g, 220 * MS, 0) == DM_TP_NONE);
     assert(g.state == DM_TP_IDLE);
 
-    /* 6b. A swipe and a drag are mutually exclusive in both directions: once the pause has been served the gesture is
-       a drag and never becomes a swipe, and a swipe can never click. */
+    /* 8. Waiting first changes nothing: there is one two-finger path, not a second "deliberate drag". */
     dm_tp_reset(&g);
     dm_tp_down(&g, 0, 1, 300, 300, 0, 0);
     dm_tp_down(&g, 10 * MS, 2, 300, 300, 500, 500);
-    assert(dm_tp_move(&g, 400 * MS, 2, 340, 340, 540, 540, slop, &dx, &dy) == DM_TP_DRAG_DOWN);
-    assert(dm_tp_move(&g, 900 * MS, 2, 380, 380, 580, 580, slop, &dx, &dy) == DM_TP_DRAG_MOVE);
-    assert(dm_tp_up(&g, 950 * MS, 0) == DM_TP_DRAG_UP);
+    assert(dm_tp_hold(&g, 900 * MS) == DM_TP_NONE);            /* two fingers never open a single-finger hold */
+    assert(dm_tp_move(&g, 1200 * MS, 2, 340, 340, 540, 540, slop, &dx, &dy) == DM_TP_SWIPE_DOWN);
+    assert(g.state == DM_TP_SWIPE);
+    assert(dm_tp_move(&g, 1300 * MS, 2, 380, 380, 580, 580, slop, &dx, &dy) == DM_TP_SWIPE_MOVE);
+    assert(dm_tp_up(&g, 1400 * MS, 0) == DM_TP_SWIPE_UP);
 
-    /* 6c. A third finger ends a swipe's contact (cancelled, never lifted), and a cancellation does the same. */
+    /* 9. Two fingers that never move publish nothing at all: no click, no purchase. */
+    dm_tp_reset(&g);
+    dm_tp_down(&g, 0, 1, 300, 300, 0, 0);
+    dm_tp_down(&g, 10 * MS, 2, 300, 300, 500, 500);
+    assert(dm_tp_move(&g, 600 * MS, 2, 302, 301, 501, 502, slop, &dx, &dy) == DM_TP_NONE);
+    assert(dm_tp_up(&g, 900 * MS, 1) == DM_TP_NONE);
+    assert(dm_tp_up(&g, 950 * MS, 0) == DM_TP_NONE);
+
+    /* 10. A third finger ends an open swipe contact; so does an explicit cancel. */
     dm_tp_reset(&g);
     dm_tp_down(&g, 0, 1, 300, 300, 0, 0);
     dm_tp_down(&g, 10 * MS, 2, 300, 300, 500, 400);
     assert(dm_tp_move(&g, 60 * MS, 2, 300, 260, 500, 360, slop, &dx, &dy) == DM_TP_SWIPE_DOWN);
     assert(dm_tp_down(&g, 80 * MS, 3, 700, 700, 0, 0) == DM_TP_CONTACT_CANCEL);
     assert(dm_tp_move(&g, 90 * MS, 3, 300, 250, 500, 350, slop, &dx, &dy) == DM_TP_NONE);
+
     dm_tp_reset(&g);
     dm_tp_down(&g, 0, 1, 300, 300, 0, 0);
     dm_tp_down(&g, 10 * MS, 2, 300, 300, 500, 400);
     assert(dm_tp_move(&g, 60 * MS, 2, 300, 260, 500, 360, slop, &dx, &dy) == DM_TP_SWIPE_DOWN);
     assert(dm_tp_cancel(&g) == DM_TP_CONTACT_CANCEL);
 
-    /* 7. Two fingers that pause and then move are a drag: the contact starts at the cursor as it is then, and the
-       later movement is published as the contact's own travel. */
-    dm_tp_reset(&g);
-    dm_tp_down(&g, 0, 1, 300, 300, 0, 0);
-    dm_tp_down(&g, 100 * MS, 2, 300, 300, 500, 500);              /* pivot (400,400) */
-    assert(dm_tp_move(&g, 300 * MS, 2, 305, 305, 505, 505, slop, &dx, &dy) == DM_TP_NONE);   /* still inside */
-    assert(g.state == DM_TP_TWO);
-    assert(dm_tp_move(&g, 420 * MS, 2, 340, 320, 540, 520, slop, &dx, &dy) == DM_TP_DRAG_DOWN);
-    assert(dx == 40 && dy == 20);
-    assert(g.state == DM_TP_DRAG);
-    assert(dm_tp_move(&g, 440 * MS, 2, 360, 330, 560, 530, slop, &dx, &dy) == DM_TP_DRAG_MOVE);
-    assert(dx == 20 && dy == 10);
-    assert(dm_tp_up(&g, 500 * MS, 1) == DM_TP_DRAG_UP);
-    /* the finger left on the glass may not click, move or drag anything */
-    assert(dm_tp_move(&g, 520 * MS, 1, 100, 100, 0, 0, slop, &dx, &dy) == DM_TP_NONE);
-    assert(dm_tp_up(&g, 600 * MS, 0) == DM_TP_NONE);
-    assert(g.state == DM_TP_IDLE);
-
-    /* 8. A third finger ends a drag safely: the contact is cancelled, never lifted. */
-    dm_tp_reset(&g);
-    dm_tp_down(&g, 0, 1, 300, 300, 0, 0);
-    dm_tp_down(&g, 50 * MS, 2, 300, 300, 500, 500);
-    assert(dm_tp_move(&g, 400 * MS, 2, 340, 340, 540, 540, slop, &dx, &dy) == DM_TP_DRAG_DOWN);
-    assert(dm_tp_down(&g, 450 * MS, 3, 700, 700, 0, 0) == DM_TP_CONTACT_CANCEL);
-    assert(g.state == DM_TP_CANCELLED);
-    assert(dm_tp_move(&g, 460 * MS, 3, 340, 340, 540, 540, slop, &dx, &dy) == DM_TP_NONE);
-    assert(dm_tp_up(&g, 500 * MS, 2) == DM_TP_NONE);
-
-    /* 9. A cancellation (focus loss, a system gesture) never clicks, and a drag's contact is cancelled. */
+    /* 11. Cancelling a tap never clicks, and after a cancellation the next touch starts clean. */
     dm_tp_reset(&g);
     dm_tp_down(&g, 0, 1, 640, 360, 0, 0);
     assert(dm_tp_cancel(&g) == DM_TP_NONE);
     assert(dm_tp_up(&g, 100 * MS, 0) == DM_TP_NONE);
     dm_tp_reset(&g);
-    dm_tp_down(&g, 0, 1, 300, 300, 0, 0);
-    dm_tp_down(&g, 10 * MS, 2, 300, 300, 500, 500);
-    assert(dm_tp_move(&g, 400 * MS, 2, 340, 340, 540, 540, slop, &dx, &dy) == DM_TP_DRAG_DOWN);
-    assert(dm_tp_cancel(&g) == DM_TP_CONTACT_CANCEL);
+    dm_tp_down(&g, 200 * MS, 1, 500, 400, 0, 0);
+    assert(dm_tp_up(&g, 300 * MS, 0) == DM_TP_CLICK);
 
-    /* 10. Two taps in a row are two clicks: the game sees two Taps and decides for itself that a quick pair is a
-       double tap, exactly as it did with physical touches. */
+    /* 12. Two taps are two clicks: the game decides for itself that a quick pair is a double tap. */
     dm_tp_reset(&g);
     dm_tp_down(&g, 0, 1, 500, 400, 0, 0);
     assert(dm_tp_up(&g, 120 * MS, 0) == DM_TP_CLICK);
     dm_tp_down(&g, 300 * MS, 1, 500, 400, 0, 0);
     assert(dm_tp_up(&g, 400 * MS, 0) == DM_TP_CLICK);
 
-    /* 11. The two-finger slop is per axis, like the recognizer's: a diagonal drift that stays inside it on both axes
-       leaves the gesture undecided (and therefore silent). */
+    /* 13. The two-finger slop is per axis, like the recognizer's: a diagonal drift that stays inside it leaves the
+       gesture silent. */
     dm_tp_reset(&g);
     dm_tp_down(&g, 0, 1, 300, 300, 0, 0);
     dm_tp_down(&g, 10 * MS, 2, 300, 300, 500, 500);
@@ -184,20 +187,18 @@ int main(void) {
                                         500 + slop * 0.9f, 500 + slop * 0.9f, slop, &dx, &dy) == DM_TP_NONE);
     assert(g.state == DM_TP_TWO);
 
-    /* 12. A finger count going straight from 1 to 2 in one event (both landed together) is the same gesture. */
+    /* 14. Both fingers landing in one event is the same gesture. */
     dm_tp_reset(&g);
     assert(dm_tp_down(&g, 0, 2, 300, 300, 500, 500) == DM_TP_NONE);
     assert(g.state == DM_TP_TWO);
-    assert(dm_tp_move(&g, 400 * MS, 2, 340, 340, 540, 540, slop, &dx, &dy) == DM_TP_DRAG_DOWN);
+    assert(dm_tp_move(&g, 400 * MS, 2, 340, 340, 540, 540, slop, &dx, &dy) == DM_TP_SWIPE_DOWN);
 
     /* The cursor stays on the picture. */
     assert(dm_trackpad_clamp(-0.5f) == 0);
     assert(dm_trackpad_clamp(0.25f) == 0.25f);
     assert(dm_trackpad_clamp(1.5f) == 0.999f);
 
-    /* The slop follows the picture, not the pointer speed: at every gain the launcher offers the same finger travel
-       is a movement (the stroke publishes a position, never a touch, so there is no published-pixel threshold to
-       keep above any more). */
+    /* The slop follows the picture, not the pointer speed, and the arrow's tip is the panel point. */
     {
         const float widths[] = {852, 932, 1180, 1280};
         for (unsigned i = 0; i < sizeof widths / sizeof *widths; i++) {
@@ -207,7 +208,6 @@ int main(void) {
             dm_tp_down(&g, 0, 1, 100, 100, 0, 0);
             assert(dm_tp_move(&g, 16 * MS, 1, 100, 100 + s + 0.001f, 0, 0, s, &dx, &dy) == DM_TP_CURSOR);
             assert(dm_tp_up(&g, 20 * MS, 0) == DM_TP_NONE);
-            /* the arrow's tip is the panel point, for a full-size picture and a letterboxed one */
             int px, py; dm_panel_point(0.5f, 0.5f, &px, &py);
             float vx, vy;
             dm_trackpad_arrow_tip(px, py, 0, 0, w, w * 9.0f / 16.0f, &vx, &vy);
@@ -221,9 +221,9 @@ int main(void) {
        that same panel coordinate - for a picture that fills the view, a letterboxed one and a tall (rotated) one. */
     {
         struct { float ox, oy, w, h; } pics[] = {
-            {0, 0, 1280, 720},          /* a picture that fills the view */
-            {114, 0, 932, 524.25f},     /* letterboxed in a wider window */
-            {0, 148, 852, 479.25f},     /* letterboxed above and below (a tall window) */
+            {0, 0, 1280, 720},
+            {114, 0, 932, 524.25f},
+            {0, 148, 852, 479.25f},
         };
         const float pts[] = {0.f, 0.25f, 0.5f, 0.75f, 0.999f};
         int ok = 1;
@@ -239,13 +239,11 @@ int main(void) {
                 }
             }
         assert(ok);
-        /* the panel's own corner is the picture's corner, and the far corner stays inside the picture */
         float vx, vy;
         dm_trackpad_arrow_tip(0, 0, 114, 0, 932, 524.25f, &vx, &vy);
         assert(vx == 114 && vy == 0);
         dm_trackpad_arrow_tip(1279, 719, 114, 0, 932, 524.25f, &vx, &vy);
         assert(vx > 114 && vx < 114 + 932 && vy > 0 && vy < 524.25f);
-        /* a view with no picture yet must not produce a NaN tip */
         dm_trackpad_arrow_tip(640, 360, 0, 0, 0, 0, &vx, &vy);
         assert(vx == 0 && vy == 0);
     }
@@ -293,38 +291,54 @@ class TrackpadPolicy(unittest.TestCase):
         self.assertIn('[self publishPointer]', move_cursor)
         self.assertNotIn('dm_touch', move_cursor)
 
-    def test_the_only_contacts_are_a_click_and_a_drag(self):
+    def test_the_only_contacts_are_a_click_a_hold_and_a_swipe(self):
         gamepad = (ROOT / 'dm/ios/Sources/DmGamepad.m').read_text()
         # The tap's contact is down and up in one turn, so it can never be read as a hold.
         click = _method(gamepad, '- (void)clickAtCursor {')
         self.assertIn('[self publishTouch:YES]; [self publishTouch:NO];', click)
         self.assertEqual(click.count('publishTouch'), 2)
-        # A contact is published nowhere else except the two two-finger gestures, which open it on purpose and move it
-        # after: a drag (a carried item) and a swipe (the game's own touch drag, for the torch and the lists).
+        # Four publications in the whole overlay: the tap, the hold that a still finger opens, the two-finger down and
+        # the swipe's own moves. Nothing else ever puts a contact into the game.
         published = gamepad.count('[self publishTouch:YES]')
-        self.assertEqual(published, 5, 'a click, drag down/move, swipe down/move')
+        self.assertEqual(published, 4, 'click, hold, swipe down, swipe move')
         self.assertIn('[self publishTouch:YES]', _method(gamepad, '- (void)swipeBy:'))
         self.assertNotIn('[self publishTouch:YES]', _method(gamepad, '- (void)trackpadBegan:'))
+        self.assertNotIn('[self publishTouch:YES]', _method(gamepad, '- (void)trackpadMoved:').split('case DM_TP_SWIPE_DOWN:')[0])
         # A click is produced by exactly one transition, and only on release.
         ended = _method(gamepad, '- (void)trackpadEnded:')
         self.assertIn('if (a == DM_TP_CLICK) [self clickAtCursor];', ended)
         self.assertEqual(gamepad.count('clickAtCursor]'), 1)
         # A cancelled gesture cancels, never lifts: a lift could still arrive as the game's Tap.
         self.assertIn('if (dm_tp_cancel(&_tp) == DM_TP_CONTACT_CANCEL) dm_touch_cancel_from(DM_CONTACT_IOS);', ended)
-        # Each contact is released only by its own gesture's end.
-        self.assertIn('else if (a == DM_TP_DRAG_UP) { [self publishTouch:NO];', ended)
+        # Each contact is released only by its own gesture's end, and an unfinished hold is cancelled.
+        self.assertIn('else if (a == DM_TP_HOLD_UP) { [self publishTouch:NO];', ended)
+        self.assertIn('else if (a == DM_TP_CONTACT_CANCEL) { dm_touch_cancel_from(DM_CONTACT_IOS);', ended)
         self.assertIn('else if (a == DM_TP_SWIPE_UP) { [self publishTouch:NO];', ended)
         # A swipe runs through the shared adapter (dm/host/dm_swipe.h), the same one the Mac front end uses, and the
         # pointer follows it so the arrow and the contact stay on one pixel.
         swipe = _method(gamepad, '- (void)swipeBy:')
         self.assertIn('dm_swipe_move(&_swipe', swipe)
         self.assertIn('_cursor.x = nx; _cursor.y = ny;', swipe)
-        # The drag opens where the pointer is and does not move it in the same call, so the game's hit test sees the
-        # item the player picked rather than a point a few pixels further on.
+
+    def test_a_still_finger_opens_the_hold_only_after_the_window(self):
+        """The regression that created this mode must not come back through the hold."""
+        gamepad = (ROOT / 'dm/ios/Sources/DmGamepad.m').read_text()
+        began = _method(gamepad, '- (void)trackpadBegan:')
+        # A touch-down only starts a timer; the contact is opened later, by the tick, and only if nothing changed.
+        self.assertIn('if (_tp.state == DM_TP_SINGLE) [self armHoldTimer];', began)
+        self.assertNotIn('publishTouch', began)
+        tick = _method(gamepad, '- (void)holdTick {')
+        self.assertIn('if (_tp.state != DM_TP_SINGLE || dm_tp_hold(&_tp, dm_touch_now_ns()) != DM_TP_HOLD_DOWN) return;', tick)
+        self.assertIn('[self publishPointer];', tick)
+        self.assertIn('[self publishTouch:YES];', tick)
+        # The timer is armed once per touch-down, at the hold window.
+        arm = _method(gamepad, '- (void)armHoldTimer')
+        self.assertIn('DM_TRACKPAD_HOLD_NS', arm)
+        # Moving with a hold's contact down cancels it instead of dragging with it.
         moved = _method(gamepad, '- (void)trackpadMoved:')
-        down_case = moved[moved.index('case DM_TP_DRAG_DOWN:'):moved.index('case DM_TP_DRAG_MOVE:')]
-        self.assertIn('[self publishTouch:YES]', down_case)
-        self.assertNotIn('moveCursorBy', down_case)
+        cancel_case = moved[moved.index('case DM_TP_CONTACT_CANCEL:'):moved.index('case DM_TP_SWIPE_DOWN:')]
+        self.assertIn('dm_touch_cancel_from(DM_CONTACT_IOS);', cancel_case)
+        self.assertNotIn('moveCursorBy', cancel_case)
 
     def test_the_published_point_is_the_cursor_never_the_finger(self):
         """The audit's central question: what the game is told about a tap is the cursor, not the glass."""
@@ -372,15 +386,16 @@ class TrackpadPolicy(unittest.TestCase):
         # The picture the arrow is mapped into is the one front_ios.m lays the game out with, floor included.
         self.assertIn('floor((b.size.width - w) / 2)', gamepad)
         self.assertIn('floor((b.size.height - h) / 2)', gamepad)
-        # A drag tints it, so a carried item reads differently from a hover.
-        self.assertIn('_dragging ? [UIColor colorWithRed:', gamepad)
+        # A hold tints it orange and a swipe blue, so both read differently from a hover.
+        self.assertIn('_holding ? [UIColor colorWithRed:', gamepad)
+        self.assertIn('_swiping ? [UIColor colorWithRed:', gamepad)
 
     def test_the_gesture_is_reset_with_the_overlay(self):
         gamepad = (ROOT / 'dm/ios/Sources/DmGamepad.m').read_text()
         reset = _method(gamepad, '- (void)reset {')
         self.assertIn('[_tpTouches removeAllObjects]', reset)
         self.assertIn('dm_tp_reset(&_tp)', reset)
-        self.assertIn('_dragging = _swiping = NO', reset)
+        self.assertIn('_holding = _swiping = NO', reset)
         self.assertIn('dm_swipe_end(&_swipe)', reset)
         # The trackpad takes every touch of its view, in one call: a per-touch loop could not see a second finger.
         self.assertIn('[self trackpadBegan:ts]', gamepad)

@@ -74,6 +74,49 @@ import Foundation
         assert(TouchInputMode.gamepad.pair(keeping: "1").input == "1")
         assert(TouchInputMode.touch.pair(keeping: "0").input == "1")            // direct touch needs the touch screen
         assert(TouchInputMode.trackpad.pair(keeping: "0").input == dmTouchInputTrackpad)
+        // Changing the mode resets the options the previous mode left behind, and only a real change does it: opening
+        // the launcher, or re-selecting the mode that is already set, keeps the player's own choice.
+        let suiteSwitch = "org.nxnative.launcher-mode-switch." + UUID().uuidString
+        let dSwitch = UserDefaults(suiteName: suiteSwitch)!
+        defer { dSwitch.removePersistentDomain(forName: suiteSwitch) }
+        let policy = Setting(env: "DM_DD_TOUCH_POLICY", kind: "toggle", label: "Touch interaction policy (experimental)", note: "", def: "0", options: nil, min: nil, max: nil, step: nil)
+        let speed = Setting(env: "DM_TRACKPAD_SPEED", kind: "range", label: "Pointer speed", note: "", def: "1.0", options: nil, min: 0.5, max: 2, step: 0.1)
+        unsetenv("DM_ENV_FILE_KEYS"); unsetenv("DM_DD_TOUCH_POLICY")
+        let sw = LauncherModel([input, pad, policy, speed], defaults: dSwitch)
+        assert(sw.touchMode == .gamepad)
+        sw.setTouchMode(.touch)                                  // direct touch: its option is the policy
+        assert(sw.touchMode == .touch && sw.values["DM_TOUCH_INPUT"] == "1" && sw.values["DM_TOUCH_CONTROLS"] == "0")
+        sw.setValue("DM_DD_TOUCH_POLICY", "1")                   // the player turns it on there
+        sw.setValue("DM_TRACKPAD_SPEED", "1.6")                  // and a speed is left behind from an earlier visit
+        sw.setTouchMode(.trackpad)
+        assert(sw.touchMode == .trackpad)
+        assert(sw.values["DM_TOUCH_INPUT"] == dmTouchInputTrackpad && sw.values["DM_TOUCH_CONTROLS"] == "0")
+        assert(sw.values["DM_DD_TOUCH_POLICY"] == "0")           // the policy does not follow into the trackpad
+        assert(sw.values["DM_TRACKPAD_SPEED"] == "1.0")          // and the speed starts again at 1.0x
+        // Re-selecting the mode that is already set changes nothing, so a choice made in that mode survives a visit to
+        // the launcher.
+        sw.setValue("DM_TRACKPAD_SPEED", "1.9")
+        sw.setTouchMode(.trackpad)
+        assert(sw.values["DM_TRACKPAD_SPEED"] == "1.9")
+        // Leaving a mode also clears its option: back to direct touch, the speed is default again, and the gamepad no
+        // longer inherits a "disable touch" from anywhere.
+        sw.setTouchMode(.touch)
+        assert(sw.values["DM_TRACKPAD_SPEED"] == "1.0")
+        sw.setTouchMode(.gamepad)
+        assert(sw.touchMode == .gamepad)
+        assert(sw.values["DM_TOUCH_INPUT"] == "1" && sw.values["DM_TOUCH_CONTROLS"] == "1")
+        assert(sw.values["DM_DD_TOUCH_POLICY"] == "0")
+        // The switch is persisted like any other write: a new model reads the same values back.
+        let swAgain = LauncherModel([input, pad, policy, speed], defaults: dSwitch)
+        assert(swAgain.touchMode == .gamepad && swAgain.values["DM_TRACKPAD_SPEED"] == "1.0")
+        // A value an env file pins is never rewritten, not even by a mode change.
+        setenv("DM_ENV_FILE_KEYS", "DM_DD_TOUCH_POLICY", 1)
+        setenv("DM_DD_TOUCH_POLICY", "1", 1)
+        let pinned = LauncherModel([input, pad, policy, speed], defaults: dSwitch)
+        pinned.setTouchMode(.touch)
+        assert(pinned.values["DM_DD_TOUCH_POLICY"] == "1")       // the file owns it
+        unsetenv("DM_ENV_FILE_KEYS"); unsetenv("DM_DD_TOUCH_POLICY")
+
         // What the screen shows first, and what it keeps behind the disclosure (the placements are platform data too).
         let suite3 = "org.nxnative.launcher-layout." + UUID().uuidString
         let d3 = UserDefaults(suiteName: suite3)!
@@ -171,13 +214,14 @@ import Foundation
         let pad_instructions = TouchHelp.lines(.trackpad).map(\.title)
         assert(pad_instructions.contains("One finger moves the pointer"))
         assert(pad_instructions.contains("One tap clicks"))
-        assert(pad_instructions.contains("A long press does nothing"))
-        assert(pad_instructions.contains("Two fingers, pause, then move"))
-        assert(pad_instructions.contains("Two fingers, straight away"))
+        assert(pad_instructions.contains("One finger, hold"))            // the hold is back, at the pointer
+        assert(pad_instructions.contains("Two fingers swipe"))           // one two-finger path, no pause to learn
+        assert(!pad_instructions.contains("pause, then move"))           // the old drag branch is gone
         assert(pad_instructions.contains("The pointer is the target"))
-        // The mode's own line under the picker must not promise the old double-tap drag any more.
+        // The mode's own line under the picker keeps up with it: no double-tap drag, no "a long press does nothing".
         assert(!TouchInputMode.trackpad.note.contains("double tap"))
-        assert(TouchInputMode.trackpad.note.contains("long press does nothing"))
+        assert(!TouchInputMode.trackpad.note.contains("long press does nothing"))
+        assert(TouchInputMode.trackpad.note.contains("resting finger"))
         print("Launcher defaults, persistence, editability independent of layout, separate touch input switch, input-mode mapping, instructions and platform filter checks passed")
     }
 }

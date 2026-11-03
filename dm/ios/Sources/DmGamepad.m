@@ -138,8 +138,8 @@ static __weak DmGamepad *g_view;
     BOOL _trackpad;                                // the virtual trackpad is the mode: the whole screen is one pad
     CGPoint _cursor;                               // its cursor, normalized on the 16:9 picture (kept across launches)
     NSMutableArray<UITouch *> *_tpTouches;         // every finger on the glass in this mode, in the order they went down
-    dm_tp_gesture _tp;                             // what those fingers mean: tap, cursor, swipe or drag (TouchTrackpadPolicy.h)
-    BOOL _dragging;                                // a two-finger drag's contact is down
+    dm_tp_gesture _tp;                             // what those fingers mean: tap, cursor, hold or swipe (TouchTrackpadPolicy.h)
+    BOOL _holding;                                 // a single-finger hold's contact is down
     BOOL _swiping;                                 // a two-finger swipe's contact is down
     dm_swipe _swipe;                               // that swipe's contact, moved by the shared adapter (dm/host/dm_swipe.h)
     CAShapeLayer *_arrow;                          // the pointer drawn for the trackpad (this build has no sprite of its own)
@@ -391,12 +391,28 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     CGPoint p[2] = {CGPointZero, CGPointZero};
     int n = [self tpPoints:p];
     int a = dm_tp_down(&_tp, dm_touch_now_ns(), n, (float)p[0].x, (float)p[0].y, (float)p[1].x, (float)p[1].y);
-    if (a == DM_TP_CONTACT_CANCEL) { dm_touch_cancel_from(DM_CONTACT_IOS); _dragging = _swiping = NO; }   // a third finger
+    if (a == DM_TP_CONTACT_CANCEL) { dm_touch_cancel_from(DM_CONTACT_IOS); _holding = _swiping = NO; }   // a third finger
+    if (_tp.state == DM_TP_SINGLE) [self armHoldTimer];   // nothing arrives while the finger is still: ask later
     [self layoutArrow];
 }
-// A finger moved: the cursor follows it, or a two-finger drag that has served its pause starts here. A two-finger
-// swipe that moves before the pause is a scroll intent and stays inert (see the header): it never becomes a drag,
-// never becomes a click, and never publishes a contact of its own.
+// The hold timer. Nothing arrives while a finger rests, so this is how a still single finger becomes the game's hold:
+// one contact, at the pointer, opened only after the finger has been still for the game's own 0.5 s. A finger that
+// moved, lifted or was joined by a second one by then is left alone, so a touch can never publish a contact merely
+// because it happened.
+- (void)armHoldTimer {
+    __weak DmGamepad *weak = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(DM_TRACKPAD_HOLD_NS + 20000000ull)),
+                   dispatch_get_main_queue(), ^{ [weak holdTick]; });
+}
+- (void)holdTick {
+    if (_tp.state != DM_TP_SINGLE || dm_tp_hold(&_tp, dm_touch_now_ns()) != DM_TP_HOLD_DOWN) return;
+    [self publishPointer];       // the hover matches the point the contact starts on
+    [self publishTouch:YES];
+    _holding = YES;
+    [self layoutArrow];
+}
+// A finger moved: the cursor follows it, or the two-finger swipe starts here. Moving while a hold's contact is down
+// cancels that contact instead of dragging with it - the hold owns the finger, and the pointer stays where it was.
 - (void)trackpadMoved:(NSSet<UITouch *> *)ts {
     (void)ts;
     CGPoint p[2] = {CGPointZero, CGPointZero};
@@ -406,18 +422,11 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
                        [self tpSlop], &dx, &dy);
     switch (a) {
     case DM_TP_CURSOR: [self moveCursorBy:dx dy:dy]; break;
-    case DM_TP_DRAG_DOWN:
-        // The contact opens exactly where the pointer is and the pointer does not move in this call: the game's next
-        // read must hit-test the item the player picked, not a point a few pixels away. The travel that decided the
-        // drag is added by the following moves (the policy measured it from the pause's own pivot).
-        [self publishPointer];
-        [self publishTouch:YES];
-        _dragging = YES;
+    case DM_TP_CONTACT_CANCEL:                       // moved out of a hold: the contact goes, the pointer stays
+        dm_touch_cancel_from(DM_CONTACT_IOS);
+        _holding = _swiping = NO;
+        dm_swipe_end(&_swipe);
         [self layoutArrow];
-        break;
-    case DM_TP_DRAG_MOVE:
-        [self moveCursorBy:dx dy:dy];
-        [self publishTouch:YES];
         break;
     case DM_TP_SWIPE_DOWN:
         // The game's own touch drag, opened where the pointer is: this is what pulls the torch down and what a list
@@ -434,19 +443,20 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     default: break;
     }
 }
-// A finger lifted. Only a quick still finger inside the slop is a click (the test for it is in the header); a drag
-// lifts its contact; everything else ends silently. A finger left on the glass after a gesture is ignored until it
-// lifts too, so it cannot produce a click of its own.
+// A finger lifted. Only a quick still finger inside the slop is a click, and a hold's contact is lifted or cancelled
+// by the header's own test; everything else ends silently. A finger left on the glass after a gesture is ignored until
+// it lifts too, so it cannot produce a click of its own.
 - (void)trackpadEnded:(NSSet<UITouch *> *)ts tapped:(BOOL)ended {
     for (UITouch *t in ts) [_tpTouches removeObject:t];
     if (ended) {
         int a = dm_tp_up(&_tp, dm_touch_now_ns(), (int)_tpTouches.count);
         if (a == DM_TP_CLICK) [self clickAtCursor];
-        else if (a == DM_TP_DRAG_UP) { [self publishTouch:NO]; _dragging = NO; [self layoutArrow]; }
+        else if (a == DM_TP_HOLD_UP) { [self publishTouch:NO]; _holding = NO; [self layoutArrow]; }
+        else if (a == DM_TP_CONTACT_CANCEL) { dm_touch_cancel_from(DM_CONTACT_IOS); _holding = NO; [self layoutArrow]; }
         else if (a == DM_TP_SWIPE_UP) { [self publishTouch:NO]; _swiping = NO; dm_swipe_end(&_swipe); [self layoutArrow]; }
     } else {                             // cancelled: never lift (a lift can still arrive as the game's Tap)
         if (dm_tp_cancel(&_tp) == DM_TP_CONTACT_CANCEL) dm_touch_cancel_from(DM_CONTACT_IOS);
-        _dragging = _swiping = NO;
+        _holding = _swiping = NO;
         dm_swipe_end(&_swipe);
         [_tpTouches removeAllObjects];
         dm_tp_reset(&_tp);
@@ -562,7 +572,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
-- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; [_tpTouches removeAllObjects]; dm_tp_reset(&_tp); _dragging = _swiping = NO; dm_swipe_end(&_swipe); dm_touch_cancel_from(DM_CONTACT_IOS); [self recompute]; [self layoutArrow]; }
+- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; [_tpTouches removeAllObjects]; dm_tp_reset(&_tp); _holding = _swiping = NO; dm_swipe_end(&_swipe); dm_touch_cancel_from(DM_CONTACT_IOS); [self recompute]; [self layoutArrow]; }
 
 // ---- Shapes ----
 static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
@@ -624,9 +634,10 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     CGFloat u = MAX(0.9, self.u), w = 12 * u, h = 19 * u;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     _arrow.hidden = !_trackpad;
-    // A gesture with a live contact tints the pointer, so a carried item (a drag, orange) and a swipe (blue: the game
-    // is being dragged under the pointer) both read differently from a plain hover. Everything else stays white.
-    _arrow.fillColor = (_dragging ? [UIColor colorWithRed:1 green:0.72 blue:0.3 alpha:0.97]
+    // A gesture with a live contact tints the pointer, so a hold (orange: the game is being pressed at the pointer)
+    // and a swipe (blue: the game is being dragged under it) both read differently from a plain hover. Everything else
+    // stays white.
+    _arrow.fillColor = (_holding ? [UIColor colorWithRed:1 green:0.72 blue:0.3 alpha:0.97]
                        : _swiping ? [UIColor colorWithRed:0.45 green:0.72 blue:1 alpha:0.97]
                                   : [UIColor colorWithWhite:1 alpha:0.96]).CGColor;
     _arrow.lineWidth = MAX(1.0, 1.05 * u);

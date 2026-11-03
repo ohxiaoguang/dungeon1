@@ -73,12 +73,12 @@ class PlatformSettings(unittest.TestCase):
         self.assertIn('case .gamepad: return (input == "0" ? "0" : "1", "1")', source)
         self.assertIn('case .touch: return ("1", "0")', source)
         self.assertIn('case .trackpad: return (dmTouchInputTrackpad, "0")', source)
-        self.assertIn('let pair = mode.pair(keeping: values["DM_TOUCH_INPUT"])', source)
+        self.assertIn('let pair = mode.pair()', source)   # the mode's own default, never the last mode's sub-option
         self.assertIn('setValue("DM_TOUCH_INPUT", pair.input)', source)
         self.assertIn('setValue("DM_TOUCH_CONTROLS", pair.controls)', source)
         # A pair with neither the gamepad nor the touch screen is reported as it is and never rewritten.
         self.assertIn('case "0": return controls == "0" ? .custom : .gamepad', source)
-        self.assertIn('guard mode != .custom else { return }', source)
+        self.assertIn('guard mode != .custom, mode != touchMode else { return }', source)
         # The rows of the raw switches are not drawn: the mode is their only row (settingPlacement).
         self.assertIn('"DM_TOUCH_INPUT", "DM_TOUCH_CONTROLS",', source)
         self.assertIn('return .composed', source)
@@ -134,18 +134,37 @@ class PlatformSettings(unittest.TestCase):
         self.assertGreaterEqual(len(titles), 12)
         self.assertEqual(len(titles), len(texts))
         # The instructions the spec asks for, by name.
-        for title in ('One finger moves the pointer', 'One tap clicks', 'A long press does nothing',
-                      'Two fingers, pause, then move', 'Two fingers, straight away', 'The pointer is the target',
+        for title in ('One finger moves the pointer', 'One tap clicks', 'One finger, hold',
+                      'Two fingers swipe', 'The pointer is the target',
                       'The glass is the game', 'Touch interaction policy', 'Buttons and sticks', 'Three layouts',
                       'Disable touch input'):
             self.assertIn(title, titles)
         # One entry per sentence, and no English left untranslated in a Chinese interface.
         for text in titles + texts:
             self.assertIn('"%s":' % text, catalog, text)
-        # The two-finger swipe is documented as the game's own touch drag (the torch and the lists), not as a click.
-        straight = [t for t in texts if 'two-finger swipe' in t]
-        self.assertTrue(straight and "game's own touch drag" in straight[0], straight)
+        # The two-finger swipe is documented as the game's own touch drag (the torch and the lists), not as a click,
+        # and with no pause to learn any more.
+        straight = [t for t in texts if "game's own touch drag" in t]
+        self.assertTrue(straight, texts)
         self.assertIn('pulls the torch down', straight[0])
+        self.assertIn('nothing to wait for', straight[0])
+        # The single-finger hold is documented as the game's own long press.
+        hold = [t for t in texts if 'the game is pressed where the pointer is' in t]
+        self.assertTrue(hold, texts)
+
+    def test_changing_the_mode_resets_the_options_of_the_mode_entered(self):
+        """An option the last mode left behind must not keep acting in a mode that does not show it."""
+        source = SCHEMA.read_text()
+        body = source[source.index('func setTouchMode'):]
+        body = body[:body.index('\n    }\n')]
+        # Only a real change writes anything: opening the launcher, or picking the mode already set, keeps the choice.
+        self.assertIn('guard mode != .custom, mode != touchMode else { return }', body)
+        self.assertIn('setValue("DM_DD_TOUCH_POLICY", "0")', body)      # the touch policy belongs to direct touch
+        self.assertIn('setValue("DM_TRACKPAD_SPEED", "1.0")', body)     # and the speed to the trackpad
+        # The gamepad's "disable touch" is part of the pair, and the pair no longer keeps the previous value.
+        self.assertNotIn('keeping:', body)
+        # setValue is what refuses to overwrite an env-file value, so a pinned setting survives a mode change.
+        self.assertIn('guard !fromFile.contains(env) else { return }', source)
 
     def test_the_advanced_header_is_one_whole_row(self):
         source = SCHEMA.read_text()

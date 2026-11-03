@@ -49,6 +49,17 @@ OBS = {
         # 0x117a678), so the Host uses this to know that the merchandise rows are
         # on screen. Read-only: the gate replays the original add.
         (0xe177ac, 30, '910203e0', 'observe a Nomad merchandise row being bound to its purchase action'),
+        # The guild's upgrade rows are described through one callback per row
+        # (`void(Upgrade::PurchaseIdentifier, GuiTooltipParameters::Text&)`,
+        # vtable 0x1177c40, operator 0xc16d20) which runs once per drawn row per
+        # frame with the price and the eligibility already resolved. Seeing it run
+        # means the upgrade rows are on screen, which is what arms the iOS
+        # "tap focuses, hold buys" latch. Read-only: the gate replays the
+        # original prologue.
+        (0xc16d20, 31, 'd100c3ff', 'observe the guild upgrade row being described (the upgrade rows are on screen)'),
+        (0xbf3010, 32, 'd102c3ff', 'observe blacksmith weapon and armour upgrade descriptions'),
+        (0xbff6d0, 33, 'aa0203e1', 'observe camping trainer skill descriptions'),
+        (0xbfaf70, 34, 'd10103ff', 'observe building upgrade descriptions'),
     ],
 }
 
@@ -60,5 +71,10 @@ FILTERS = {
         (0xe3a6d0, 2, 'd101c3ff', 'optional iOS CharacterDisplay camping-skill authorization; native toggle retained'),
         (0xe18410, 3, 'd10083ff', 'optional iOS Nomad merchandise primary binding filter; other inventory callbacks unchanged'),
         (0xe181f0, 4, 'd101c3ff', 'optional iOS Nomad merchandise secondary binding filter before pickup/operation'),
+        # UpgradeTreeDisplay click entry, BEFORE eligibility/resource mutation.
+        # The host scopes this shared entry to identifiers observed in GuildDisplay.
+        # 0xc16320 is a post-purchase notification and is too late to filter.
+        (0xc98330, 5, 'a9ba7bfd', 'optional iOS guild upgrade tree click before purchase'),
+        (0xc97fc0, 6, 'a9be7bfd', 'optional iOS guild initial unlock before purchase; captured identifier'),
     ],
 }

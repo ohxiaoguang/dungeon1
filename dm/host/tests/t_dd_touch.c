@@ -42,6 +42,14 @@ void dd_test_enable(int on);
 void dd_test_camp(int on);
 void dd_test_shop(int on);
 int dd_test_shop_filter(uintptr_t action);
+void dd_test_upgrade(int on);
+int dd_test_unlock(uint32_t kind, uint32_t id);
+int dd_test_upgrade_tree(uint32_t kind, uint32_t id);
+void dd_test_upgrade_key(uint32_t kind, uint32_t id);
+int dd_test_upgrade_filter(void);
+void dd_test_upgrade_rows(void);
+uint64_t dd_test_upgrade_live(void);
+uint64_t dd_test_upgrade_generation(void);
 void dd_test_shop_build(uintptr_t binding);
 uint64_t dd_test_tap_generation(void);
 uint64_t dd_test_shop_live(void);
@@ -976,6 +984,79 @@ int main(void) {
     up();
 
     free((void *)elem2); free((void *)list2); free((void *)vec2); free((void *)fsp); free((void *)qbuf);
+
+    // ---- Guild upgrade confirmation (filter 0xc16320, arming observation 0xc16d20) -----------
+    // The game dispatches the confirmation from its upgrade tree when the player clicks a skill
+    // row; in this build that click is the Tap of a lifting finger. A short tap must be withheld
+    // (the row stays focused, its own hover/price/description are untouched) and a release after
+    // 0.5 s must run the game's own confirmation exactly once.
+    dd_test_upgrade(1);
+    *(uint8_t *)(img + 0x27dec24) = 0;
+    down(0.5f, 0.5f); dd_test_frame();
+    chk("upgrade: a fresh contact is withheld (focus only)", !dd_test_upgrade_filter());
+    up(); dd_test_frame();
+    chk("upgrade: the short tap's release is still withheld", !dd_test_upgrade_filter());
+    down(0.5f, 0.5f); dd_test_frame(); hold_ms(600); dd_test_frame();
+    up(); dd_test_frame();
+    chk("upgrade: the release after a >=0.5 s hold runs the game's own confirmation", dd_test_upgrade_filter());
+    chk("upgrade: and only once for that contact", !dd_test_upgrade_filter());
+    down(0.5f, 0.5f); dd_test_frame(); hold_ms(600);
+    dm_touch_cancel_from(DM_CONTACT_IOS); dd_test_frame();
+    chk("upgrade: a cancelled contact never buys", !dd_test_upgrade_filter());
+    up(); dd_test_frame();
+    dm_touch up_two[2] = {{0, 0.5f, 0.5f}, {1, 0.6f, 0.6f}};
+    dm_touch_set_from(up_two, 2, DM_CONTACT_IOS); dd_test_frame(); hold_ms(600); dd_test_frame();
+    up(); dd_test_frame();
+    chk("upgrade: a second finger keeps the confirmation withheld", !dd_test_upgrade_filter());
+    // The arming observation: while the rows are being described, a contact that goes down is
+    // latched so its held release stays the game's Tap instead of becoming Press.
+    gesture_idle();
+    dd_test_upgrade_rows();
+    chk("upgrade: describing the rows marks the list on screen", dd_test_upgrade_live() != 0);
+    down(0.5f, 0.5f); dd_test_frame();
+    chk("upgrade: a contact that went down with the rows drawn is latched", dd_test_upgrade_generation() != 0);
+    gesture_state ug[4];
+    gesture_fill(ug, 4, dm_touch_now_ns());
+    hold_ms(600); dd_test_frame();
+    int un = gesture_fill(ug, 4, dm_touch_now_ns());
+    chk("upgrade gesture: held contact remains Touch", un > 0 && ug[0].type == GT_TOUCH);
+    up(); dd_test_frame();
+    un = gesture_fill(ug, 4, dm_touch_now_ns());
+    chk("upgrade gesture: release produces Tap", un > 0 && ug[0].type == GT_TAP);
+    chk("upgrade gesture: release callback buys once", dd_test_upgrade_filter());
+    chk("upgrade gesture: repeat callback is blocked", !dd_test_upgrade_filter());
+    dm_touch mt3 = {0, 0.4f, 0.4f}; dm_touch_set_from(&mt3, 1, DM_CONTACT_MAC_LEFT);
+    chk("upgrade: a Mac left click is unchanged", dd_test_upgrade_filter());
+    dm_touch_set_from(NULL, 0, DM_CONTACT_MAC_LEFT); dd_test_frame();
+    down(0.5f, 0.5f); dd_test_frame(); hold_ms(600); dd_test_frame();
+    *(uint8_t *)(img + 0x27dec24) = 1;
+    chk("upgrade: a controller-owned contact is unchanged", dd_test_upgrade_filter());
+    *(uint8_t *)(img + 0x27dec24) = 0;
+    dd_test_upgrade(0);
+    chk("upgrade policy off: original behaviour", dd_test_upgrade_filter());
+    up(); dd_test_upgrade(1);
+    gesture_idle(); dd_test_upgrade_key(17, 3);
+    down(0.5f, 0.5f); dd_test_frame(); up(); dd_test_frame();
+    chk("prepurchase: guild click is blocked before the tree body", !dd_test_upgrade_tree(17, 3));
+    chk("prepurchase: another facility's identifier passes", dd_test_upgrade_tree(18, 3));
+    gesture_idle(); dd_test_upgrade_key(17, 3);
+    down(0.5f, 0.5f); dd_test_frame(); hold_ms(600); up(); dd_test_frame();
+    chk("prepurchase: guild held click enters the tree body", dd_test_upgrade_tree(17, 3));
+    chk("prepurchase: repeated tree callback blocked", !dd_test_upgrade_tree(17, 3));
+
+    gesture_idle(); dd_test_upgrade_key(17, 3);
+    down(0.5f, 0.5f); dd_test_frame(); up(); dd_test_frame();
+    chk("unlock: short tap blocked before initial purchase", !dd_test_unlock(17, 3));
+    chk("unlock: unrendered key is blocked by actual tree binding", !dd_test_unlock(17, 999));
+    chk("unlock: other facility unchanged", dd_test_unlock(18, 3));
+    gesture_idle(); dd_test_upgrade_key(17, 3);
+    down(0.5f, 0.5f); dd_test_frame(); hold_ms(600); up(); dd_test_frame();
+    chk("unlock: hold release allows initial purchase", dd_test_unlock(17, 3));
+    chk("unlock: repeated callback blocked", !dd_test_unlock(17, 3));
+    chk("unlock: level callback cannot buy again for same contact", !dd_test_upgrade_tree(17, 3));
+    gesture_idle(); dd_test_upgrade_key(17, 3);
+    down(0.5f, 0.5f); dd_test_frame(); dm_touch_cancel_from(DM_CONTACT_IOS); up(); dd_test_frame();
+    chk("unlock: cancelled contact blocked", !dd_test_unlock(17, 3));
 
     printf("== %d checks, %d failed (clones %d, releases %d) ==\n", cases, fails, clones, releases);
     if (clones != releases) { printf("FAIL capture leak: %d clones, %d releases\n", clones, releases); fails++; }

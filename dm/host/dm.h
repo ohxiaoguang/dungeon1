@@ -81,7 +81,9 @@ enum { OBS_MOVIE_RING_LINK = 19, OBS_MOVIE_RING_UNLINK = 20,   // Metroid Dread 
        OBS_DD_ROSTER_CLICK = 28,                               // Darkest Dungeon 1.3.0: a roster element's click was just queued
        OBS_DD_SHOP_UPDATE = 29,                                // Darkest Dungeon 1.3.0: a merchandise row's own update is about to test its click byte (diagnostic)
        OBS_DD_SHOP_BUILD = 30,                                 // Darkest Dungeon 1.3.0: a merchandise row's purchase binding was just built (the supply display is drawing)
-       OBS_MAX = 31 };
+       OBS_DD_UPGRADE_ROWS = 31,                               // Darkest Dungeon 1.3.0: the guild's upgrade row is being described (its price/eligibility callback ran: the rows are on screen)
+       OBS_DD_BLACKSMITH_ROWS = 32, OBS_DD_CAMP_TRAINER_ROWS = 33, OBS_DD_BUILDING_ROWS = 34,
+       OBS_MAX = 35 };
 void gate_obs_set(int id, void (*fn)(const uint64_t *regs));
 int gate_obs_present(int id);
 // Entry filters are separate from read-only observations: deny returns integer
@@ -89,7 +91,9 @@ int gate_obs_present(int id);
 enum { FILTER_DD_SKILL = 1,   // Darkest Dungeon 1.3.0: CharacterDisplay combat-skill toggle 0xe3b5a0
        FILTER_DD_CAMP = 2,    // Darkest Dungeon 1.3.0: CharacterDisplay camping-skill toggle 0xe3a6d0
        FILTER_DD_SHOP_PRIMARY = 3, FILTER_DD_SHOP_SECONDARY = 4,
-       FILTER_MAX = 5 };
+       FILTER_DD_UPGRADE = 5,   // Darkest Dungeon 1.3.0: upgrade-level click before purchase
+       FILTER_DD_UNLOCK = 6,    // initial unlock purchase callable
+       FILTER_MAX = 7 };
 void gate_filter_set(int id, int (*fn)(const uint64_t *regs));
 int gate_filter_present(int id, uint64_t original_offset);
 uint64_t now_ns(void);

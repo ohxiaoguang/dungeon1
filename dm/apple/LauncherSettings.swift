@@ -38,7 +38,7 @@ func settingPlacement(_ env: String) -> SettingPlacement {
         return .composed
     case "DM_DD_TOUCH_POLICY":
         #if os(iOS)
-        return .composed   // drawn under Direct touch, the mode it is about (it still applies in every mode)
+        return .composed   // drawn under Direct touch; mode changes reset the policy
         #else
         return .advanced   // on a Mac it belongs with the other experimental switches
         #endif
@@ -69,7 +69,7 @@ enum TouchInputMode: String, CaseIterable {
         case .touch:
             return "No gamepad: every touch is the game's own touch screen. Tap, drag and hold work as the game defines them."
         case .trackpad:
-            return "The whole screen is a trackpad: swiping moves the pointer, a tap clicks where it points, a long press does nothing. Two fingers swipe the game's own touch (torch, lists); two fingers after a pause carry the item."
+            return "The whole screen is a trackpad: swiping moves the pointer, a tap clicks where it points, and a resting finger becomes the game's own hold. Two fingers swipe the game's touch (torch, lists, a carried item)."
         case .custom:
             return "Saved by an earlier version and kept as it is: no gamepad and no touch input. Pick a mode above to replace it."
         }
@@ -180,7 +180,6 @@ final class LauncherModel: ObservableObject {
         values["DM_TOUCH_CONTROLS"] != "0"
     }
 
-    #if os(iOS)
     /// The input mode over DM_TOUCH_INPUT and DM_TOUCH_CONTROLS. A pair saved by an earlier version that is none of
     /// the three presets (no gamepad and no touch input) is reported as `.custom` and left untouched: opening this
     /// screen never rewrites a choice the player made in a build that could not express it.
@@ -190,12 +189,18 @@ final class LauncherModel: ObservableObject {
     /// The presets, plus the current state only when that is a kept legacy pair: nothing else can select it.
     var touchModes: [TouchInputMode] { TouchInputMode.allCases.filter { $0 != .custom || touchMode == .custom } }
     var touchModeLocked: Bool { locked("DM_TOUCH_INPUT") || locked("DM_TOUCH_CONTROLS") }
-    /// Both variables in one step, so the modes can never be half applied; `.custom` writes nothing and stays as saved.
+    /// Changing the mode resets the options of the mode being entered, and writes all of them in one step so the
+    /// modes can never be half applied. An option the previous mode left behind (a touch policy that was on, a pointer
+    /// speed that was changed) must not keep acting in a mode that does not show it, so they go back to their defaults
+    /// here - and only here: opening the launcher, or re-selecting the mode that is already set, changes nothing.
+    /// `.custom` writes nothing and stays as saved.
     func setTouchMode(_ mode: TouchInputMode) {
-        guard mode != .custom else { return }
-        let pair = mode.pair(keeping: values["DM_TOUCH_INPUT"])
+        guard mode != .custom, mode != touchMode else { return }
+        let pair = mode.pair()                       // the mode's own default, never the previous mode's sub-option
         setValue("DM_TOUCH_INPUT", pair.input)
         setValue("DM_TOUCH_CONTROLS", pair.controls)
+        setValue("DM_DD_TOUCH_POLICY", "0")          // the touch policy belongs to direct touch
+        setValue("DM_TRACKPAD_SPEED", "1.0")         // and the speed to the trackpad
     }
     /// The gamepad's own option, right under the mode: the touch screen switched off while the pad keeps working. It is
     /// the same variable the mode rides on (DM_TOUCH_INPUT) - no second switch, no second reader - so `0` means "no
@@ -206,7 +211,8 @@ final class LauncherModel: ObservableObject {
     /// The direct-touch option and the trackpad's speed, from the same table as every other row.
     var touchPolicy: Setting? { setting("DM_DD_TOUCH_POLICY") }
     var pointerSpeed: Setting? { setting("DM_TRACKPAD_SPEED") }
-    #endif
+    // Compiled on both platforms, like the mapping above: only the rows are iPhone/iPad-only, and the mode switch has
+    // to be testable on a Mac (dm/apple/tests/LauncherSettingsChecks.swift).
 
     #if os(macOS)
     /// The experimental mouse is one switch over two variables. Mouse HID is what publishes the pointer and what the
@@ -484,19 +490,17 @@ enum TouchHelp {
             TouchHelpLine(title: "The glass is the game",
                           text: "Every finger is the game's own touch screen: tap, drag and hold mean exactly what the game defines, as on the Switch."),
             TouchHelpLine(title: "Touch interaction policy",
-                          text: "On (experimental), this build adds its own hold behaviour: a held combat or camping skill toggles, the Nomad and Comet shops focus on a tap and run one purchase on a 0.5 s hold, and a held town portrait opens its details on release. Off is the game's original behaviour."),
+                          text: "On (experimental), this build adds its own hold behaviour: a held combat or camping skill toggles, the Nomad and Comet shops focus on a tap and run one purchase on a 0.5 s hold, a held town portrait opens its details on release, and recognized guild, blacksmith, camping trainer and building upgrade trees use tap to inspect and a 0.5 s hold then release to purchase once. Off is the game's original behaviour."),
         ]
         case .trackpad: return [
             TouchHelpLine(title: "One finger moves the pointer",
                           text: "Swipe anywhere: only the pointer moves, and it stays where you left it. Hover and tooltips follow it."),
             TouchHelpLine(title: "One tap clicks",
                           text: "A quick tap clicks where the pointer is, never where the finger is. Two quick taps are the game's own double click."),
-            TouchHelpLine(title: "A long press does nothing",
-                          text: "Resting a finger never presses, drags, buys or toggles anything, however long it stays. Only a tap or a two-finger drag acts."),
-            TouchHelpLine(title: "Two fingers, pause, then move",
-                          text: "Hold two fingers still for about a third of a second and then move them: the item under the pointer is dragged and the pointer turns orange while it is carried. Lifting either finger ends the drag."),
-            TouchHelpLine(title: "Two fingers, straight away",
-                          text: "A two-finger swipe is the game's own touch drag, starting where the pointer is: it pulls the torch down and scrolls a list, and it never clicks. It cannot turn into a drag or the other way round. On a draggable item it picks that item up, exactly as a finger drag there would."),
+            TouchHelpLine(title: "One finger, hold",
+                          text: "Rest a finger on the glass without moving for about half a second and the game is pressed where the pointer is; keep holding and the game's own long press starts (hold to buy, hold to toggle a skill). The pointer turns orange while it is pressed. Lifting ends it, moving cancels it."),
+            TouchHelpLine(title: "Two fingers swipe",
+                          text: "Two fingers moving together are the game's own touch drag, starting where the pointer is: it scrolls a list and pulls the torch down. Swipe straight away - there is nothing to wait for. Over a draggable item it picks that item up, exactly as a finger drag there would, and it never clicks."),
             TouchHelpLine(title: "The pointer is the target",
                           text: "Everything above applies where the pointer is, never where your fingers are, so the pointer is what has to be over the item, skill or portrait you mean."),
         ]

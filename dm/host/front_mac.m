@@ -236,10 +236,13 @@ static int front_swipe_enabled(void) {
     // Preserve the original left-button touchscreen, including clamping drags
     // outside the picture. HID publication above is independent of the finger.
     dm_touch t = {0, fminf(x, 0.999f), fminf(y, 0.999f)};
-    dm_touch_set_from(&t, 1, DM_CONTACT_MAC_LEFT);
+    // DIAGNOSTIC (DM_DD_FAKE_IOS=1, removed before delivery): publish this click as an iPhone contact, so the iOS-only
+    // touch policies can be exercised on a Mac without a device.
+    dm_touch_set_from(&t, 1, getenv("DM_DD_FAKE_IOS") ? DM_CONTACT_IOS : DM_CONTACT_MAC_LEFT);
 }
 - (void)mouseUp:(NSEvent *)e {
-    _mouseButtons &= ~DM_MOUSE_LEFT; [self publishMouse:e]; dm_touch_set_from(NULL, 0, DM_CONTACT_MAC_LEFT);
+    _mouseButtons &= ~DM_MOUSE_LEFT; [self publishMouse:e];
+    dm_touch_set_from(NULL, 0, getenv("DM_DD_FAKE_IOS") ? DM_CONTACT_IOS : DM_CONTACT_MAC_LEFT);
 }
 - (void)rightMouseDown:(NSEvent *)e {
     if (!dm_mouse_enabled()) { [super rightMouseDown:e]; return; }

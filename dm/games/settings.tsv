@@ -13,4 +13,4 @@ DM_METAL_HUD	toggle	-	0	always	Performance HUD
 DM_TOUCH_HAPTICS	toggle	-	0	always	Touch feedback	Haptic clicks when pressing the virtual gamepad's controls.
 DM_RUMBLE	toggle	-	0	always	Game rumble	Vibration from the game on your phone or connected controller.
 DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Rumble strength	Adjusts game rumble alongside the game's own vibration setting.
-DM_DD_TOUCH_POLICY	toggle	-	0	DM_GAME_ID==01008F1008DA6000	Touch interaction policy (experimental)	Hold and long-press behaviour this build adds to the game's own touch handling: combat and camping skills toggle on a hold, the Nomad and Comet shops focus on a short tap and run their own purchase once on a 0.5 s hold, and a held town roster portrait opens the details on release. Off is the game's original behaviour. Needs the prepared 1.3.0 modules.
+DM_DD_TOUCH_POLICY	toggle	-	0	DM_GAME_ID==01008F1008DA6000	Touch interaction policy (experimental)	Improves touch interactions that are prone to accidental input. See the input mode guide for details.

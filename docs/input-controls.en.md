@@ -30,10 +30,9 @@ the arrow, not with your finger.
 | One finger, swipe | Moves the virtual pointer |
 | One finger, tap | One click at the pointer |
 | Two quick taps | A double click at the pointer (the game's own) |
-| One finger, long press | Nothing at all - never a drag |
-| Two fingers, swipe straight away | A native touch swipe for the game (torch, lists) |
-| Two fingers, pause ~0.3 s, then move | A deliberate drag |
-| Lift the fingers | Ends the swipe or the drag |
+| One finger, hold still ~0.5 s | Presses the game at the pointer: its own long press |
+| Two fingers moving together | A native touch drag for the game (torch, lists, a carried item) |
+| Lift the fingers | Ends the swipe or the hold |
 
 ### What you need to know
 
@@ -41,16 +40,20 @@ the arrow, not with your finger.
   your fingers are. Move the pointer onto the target first.
 - **One finger never presses anything in the game.** It only moves the pointer, so hovering a trinket, lifting, and
   touching the glass again to keep moving cannot pick the trinket up.
-- **A long press does nothing.** No matter how long a finger rests, it never becomes the game's own press (Press).
-  Interactions that need a hold - buying in a shop, toggling a combat skill - need **direct touch** instead.
+- **Holding a finger still presses the game.** After about half a second of stillness this port puts one contact down
+  at the pointer; another half second and the game's own long press starts (hold to buy, hold to toggle a skill). A
+  full hold is therefore about one second, and the arrow turns **orange** while it is pressed.
+- **Moving during a hold cancels it.** Once the contact is down, moving that finger cancels the press (the pointer
+  stays where it was); it never turns into a drag.
+- **Releasing early cancels instead of clicking.** If the game has not taken the contact as a long press yet, the
+  release withdraws it rather than becoming a tap.
 - **A two-finger swipe is real game touch.** The game sees a finger go down and move, so the pointer travels with
-  that touch: the arrow turns **blue** while swiping and **orange** while dragging.
+  that touch and the arrow turns **blue**.
 - **A two-finger swipe also drags items.** Because the game treats it as a finger drag, a swipe that starts with the
-  pointer on a draggable item picks that item up - **you do not need to pause first**. The 0.3 s pause only makes the
-  intent explicit; to the game both are the same kind of touch.
+  pointer on a draggable item picks that item up - **swipe straight away, there is nothing to wait for**.
 - **Not every screen accepts a swipe.** Lists, scroll areas and the torch usually do; some panels do not, and need
   their scrollbar dragged instead.
-- **A swipe never clicks**, not even when you lift.
+- **Neither a swipe nor a hold clicks**, not even when you lift.
 
 ### Example A: reading a trinket
 
@@ -64,12 +67,19 @@ the arrow, not with your finger.
 2. One tap clicks there.
 3. Two quick taps are the game's own double click (opening a hero's details, for example).
 
-### Example C: dragging on purpose
+### Example C: carrying an item
 
 1. Move the pointer onto the item you want to move.
-2. Put two fingers down and pause briefly (about 0.3 s).
-3. Move both fingers: the item follows the pointer and the arrow turns orange.
-4. Lift either finger to drop it.
+2. Move two fingers together - straight away, no pause - and the item follows the pointer; the arrow turns blue.
+3. Lift either finger to drop it.
+
+### Example C2: holding to buy in a shop
+
+1. Move the pointer onto the item and tap once to focus it.
+2. Rest the finger without moving for about half a second: this port presses the game at the pointer (the arrow turns
+   orange).
+3. Keep holding for about another half second so the game's own long press starts.
+4. Lift to finish; moving cancels it.
 
 ### Example D: the torch
 
@@ -77,9 +87,7 @@ the arrow, not with your finger.
 2. Swipe down with two fingers (no pause needed).
 3. The game receives a downward native touch drag.
 
-> **Unverified**: automated tests and a real run on the Mac confirm that the game really receives the sequence
-> (down, drag, release - starting at the pointer, moving down, with no stray click). **Whether the torch's brightness
-> actually follows still has to be confirmed on an iPad.**
+> **Device acceptance**: the user has verified single-finger hold, the unified two-finger swipe and mode-switch setting resets. The torch retains the game's native touch-drag behaviour.
 
 ---
 
@@ -100,13 +108,18 @@ to the game's own touch handling:
 | Combat / camping skills | Hold toggles |
 | Nomad wagon (gold page and the DLC page) | A tap focuses; hold 0.5 s and release runs one purchase |
 | Town hero portrait | Hold 0.5 s and release opens the details |
+| Guild skills (unlock and upgrade) | A tap only focuses the row (name, price, description); a 0.5 s hold buys it once |
+| Blacksmith weapon / armour upgrades | Tap to inspect; hold at least 0.5 s and release to upgrade once |
+| Camping trainer skills and town building upgrade trees | Tap to inspect; hold at least 0.5 s and release to purchase once |
 
-With it off you get the game's original behaviour. The switch is global: it is only shown under *Direct touch*, but
-the saved value applies to all three modes and survives switching between them.
+Only version-checked upgrade trees with recognized description bindings are covered. Initial unlocks are identified from their bound callbacks even before a tooltip has been rendered. The user has completed device acceptance of guild initial unlocks and level upgrades, blacksmith, camping trainer and building upgrades. Automated checks provide additional coverage. Moving the finger, a second finger or cancellation buys nothing; one contact can buy only once.
 
-**How it differs from the trackpad**: no pointer, clicks land under your finger, and the game's own long press is
-available. The trackpad positions with a pointer and cannot grab an item by accident, but its single-finger long
-press is deliberately inert.
+With it off you get the game's original behaviour. It is only shown under *Direct touch*, and changing the input mode
+turns it off so it cannot keep acting in a mode that does not show it.
+
+**How it differs from the trackpad**: no pointer, clicks land under your finger, and a long press works at once. The
+trackpad positions with a pointer and its hold also works, but you have to park the pointer on the target and wait an
+extra half second.
 
 ---
 
@@ -188,6 +201,11 @@ Worth knowing:
 
 Advanced is collapsed by default; tapping anywhere on its row (title, gap or chevron) opens it.
 
+**Changing the input mode resets the mode's own options.** Switching to another mode returns all three to their
+defaults - disable touch off, touch policy off, pointer speed 1.0x - so an option the last mode left behind cannot keep
+acting in the new one. Only a real change resets them: opening the launcher, or re-selecting the mode already set,
+leaves your settings alone (and they are still saved as usual).
+
 **The question mark beside "Input mode"** opens a short guide to the current mode, with the other two a tap away.
 It closes without changing anything on the launcher.
 
@@ -202,7 +220,7 @@ It closes without changing anything on the launcher.
 | Advanced → Game rumble | Controller vibration | Off |
 | Advanced → Rumble strength | Shown only while rumble is on | 1.0 |
 | Advanced → Performance HUD | Apple's performance overlay | Off |
-| Advanced → Touch interaction policy | The same hold behaviours as on iOS (including the town portrait hold) | Off |
+| Advanced → Touch interaction policy | Hold town portraits for details; purchase/upgrade policies apply only to iOS/iPadOS direct touch | Off |
 
 The Mac launcher also has the resource, save and MOD folders and an About page.
 
@@ -215,8 +233,8 @@ The Mac launcher also has the resource, save and MOD folders and an About page.
 - **The two-finger swipe is not a general mouse wheel.** It is a piece of game touch, so it only works where the game
   accepts a drag or a swipe.
 - **The trinket storage and similar lists may not scroll**; drag their scrollbar instead.
-- **In the trackpad mode a long press never sends the game's press.** Interactions that need one (buying in a shop)
-  require **direct touch**.
+- **A hold in the trackpad mode takes about a second**: half of it is the port putting the contact down at the
+  pointer, the other half is the game's own long-press threshold. Releasing early cancels it instead of clicking.
 - **A two-finger swipe over a draggable item drags it.** That is the game's own behaviour, not a bug; park the pointer
   beside the item if you only want to scroll.
 - **The torch's brightness change is still unverified** (see example D).
@@ -233,8 +251,7 @@ Because one finger only moves the pointer and sends no touch. That is what preve
 and pick it up by accident". Use two fingers to drag.
 
 **How do I drag an item?**
-Put the pointer on it, then press with two fingers - straight away or after a short pause - and move them. Lift
-either finger to drop it.
+Put the pointer on it and move two fingers together - no pause needed. Lift either finger to drop it.
 
 **How do I double-click?**
 Move the pointer onto the target and tap twice quickly. The game applies its own double-click rule.
@@ -247,9 +264,14 @@ selection first.
 Put the pointer on the torch's area and swipe down with two fingers. If nothing happens, check that the pointer is
 really on the torch - the arrow is where the game's pointer is.
 
-**Why does a long press do nothing?**
-In the trackpad mode a single-finger long press is deliberately inert. Switch to **Direct touch** in the launcher
-and make sure "Touch interaction policy" is on for holds (shop purchases, skill toggles).
+**Why does a long press take so long?**
+In the trackpad mode the finger has to stay still for about half a second before the port presses at the pointer, and
+the game's own long-press threshold needs about another half second - roughly one second in total. For a press that
+starts at once, use **Direct touch** with "Touch interaction policy" on.
+
+**Will a hold turn into a click when I let go?**
+No. If the game has not taken it as a long press yet, the press is withdrawn; once it has, the game ends it by its own
+rules.
 
 **How do I drag with a MacBook trackpad?**
 Either press the trackpad and move (same as holding the left button) or swipe with two fingers (a game touch drag).

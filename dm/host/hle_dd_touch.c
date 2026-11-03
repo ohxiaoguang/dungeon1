@@ -67,6 +67,7 @@
 // callable of its own class, so both pages reach the tab the same way.
 #include "hle.h"
 #include "front.h"
+#include "dm_input.h"   // dm_touch_input_mode(): the upgrade policy belongs to direct touch only
 #include <TargetConditionals.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -93,6 +94,13 @@
 #define DD_SHOP_PURCHASE_VT 0x117a678u // TrinketSupplyDisplay's purchase callback; +0x30 is 0xc30760
 #define DD_SHOP_COMET_VT 0x117a7c0u    // CometTrinketSupplyDisplay's purchase callback; +0x30 is 0xc31e00
 #define DD_SHOP_BUILD_SITE 0xe177acu   // OBS 30: `add x0,sp,#0x80`, the row builder just bound a purchase row
+// UpgradeTreeDisplay click is upstream of purchase; GuildDisplay 0xc16320
+// is a notification AFTER the resource/state changes and must never be blocked.
+#define DD_UPGRADE_CONFIRM 0xc98330u
+#define DD_UPGRADE_CONFIRM_VT 0x1181b18u
+#define DD_UPGRADE_ROWS 0xc16d20u
+#define DD_UPGRADE_ROWS_VT 0x1177c40u
+#define DD_UPGRADE_NEAR_NS 250000000ull   // a row was described this recently: the upgrade list is on screen
 #define DD_SHOP_NEAR_NS 300000000ull   // a purchase row was built this recently: the supply display is on screen
 #define DD_SHOP_FORGET_NS 1000000000ull // ... and this much silence drops the contact's hold-tap latch again
 // The merchandise row's own update (0xe13120) runs per frame and per row from
@@ -166,6 +174,7 @@ _Static_assert(offsetof(dd_wobj, hero) == 0x50, "wrapper hero");
 _Static_assert(offsetof(dd_wobj, skill) == 0x58, "wrapper skill");
 _Static_assert(sizeof(dd_wobj) == DD_WRAPPER_LEN, "wrapper size");
 
+static int dd_pointer_owner(void);
 static module_t *dd_main;
 static uintptr_t dd_base;
 static pthread_once_t dd_once = PTHREAD_ONCE_INIT;
@@ -186,6 +195,23 @@ static int dd_shop_click_used;
 // contact that went down while they were on screen (its release is the Tap the
 // game's own click comes from). Host-side values only, no game pointer.
 static uint64_t dd_shop_live_ns, dd_tap_generation;
+// The guild's upgrade list: when its rows were last described, the contact that went down
+// while they were on screen (it is the one whose release is the game's own click), and the
+// contact whose confirmation already ran. Host-side values only, no game pointer.
+static int dd_upgrade, dd_unlock;
+static int dd_extra_upgrade[3];
+// Each callback is installed into the UpgradeTree's two description functions
+// (tree+0x130/+0x160, __f_ at +0x150/+0x180). Unlike the rendered-key
+// census these bindings exist BEFORE a locked row has drawn a tooltip.
+static const struct { unsigned vt, op, obs, next; } dd_upgrade_descriptors[] = {
+    {0x1174858, 0xbf3010, OBS_DD_BLACKSMITH_ROWS, 0xa9077bfd},
+    {0x1175b28, 0xbff6d0, OBS_DD_CAMP_TRAINER_ROWS, 0x91002000},
+    {0x1175018, 0xbfaf70, OBS_DD_BUILDING_ROWS, 0xa9027bfd},
+};
+static uint64_t dd_upgrade_live_ns, dd_upgrade_generation, dd_upgrade_click_generation;
+static int dd_upgrade_used;
+static struct { uint32_t kind, id; } dd_upgrade_keys[64];
+static unsigned dd_upgrade_nkeys;
 static int dd_build_probe = -1, dd_build_probe_lines;   // DM_DD_SHOP_BUILD=1: how often the display rebuilds its rows
 static uint64_t dd_build_probe_frame;
 static int dd_diag = -1, dd_diag_lines;
@@ -227,6 +253,18 @@ static int dd_action_ok(uintptr_t action) {
     if (!action) return 0;
     uintptr_t vt = dd_ptr(action);
     return vt == dd_base + DD_SKILL_VT || (dd_camp && vt == dd_base + DD_CAMP_VT);
+}
+// Acceptance diagnostic (DM_DD_TOUCH_DEBUG=1): one line per state change and per judged click, capped. It exists to
+// answer "which layer refused to engage" from a device log alone, so every early return of the guild upgrade policy
+// reports its own reason once.
+#define DD_BUILD_TAG "town-upgrades-r5"
+static int dd_dbg = -1, dd_dbg_lines;
+static void dd_udiag(const char *fmt, ...) {
+    if (dd_dbg < 0) dd_dbg = getenv("DM_DD_TOUCH_DEBUG") != NULL;
+    if (!dd_dbg || dd_dbg_lines >= 200) return;
+    dd_dbg_lines++;
+    char b[224]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
+    LOG("DD upgrade diag: %s", b);
 }
 // DM_DD_TOUCH_DEBUG=1 (acceptance diagnostics): every decision once, capped, never a per-frame stream.
 static void dd_note(const char *fmt, ...) {
@@ -297,6 +335,27 @@ static void dd_validate(void) {
         dd_ptr(base + 0x1193428 + DD_SLOT) == base + 0xe181f0 &&
         dd_ptr(base + 0x117a678 + DD_SLOT) == base + 0xc30760 &&
         dd_ptr(base + 0x117a7c0 + DD_SLOT) == base + 0xc31e00;
+    // The guild upgrade policy: its two gates plus the words around them (the gate itself
+    // replaces the entry instruction, so its neighbours pin the site) and the two vtables
+    // whose +0x30 slots must be exactly these functions.
+    dd_upgrade = ios && gate_filter_present(FILTER_DD_UPGRADE, DD_UPGRADE_CONFIRM) &&
+        gate_obs_present(OBS_DD_UPGRADE_ROWS) &&
+        dd_instruction(0xc95fa8, 0x29120801) &&
+        dd_instruction(0xc96114, 0x9104c260) && dd_instruction(0xc9611c, 0x97fd70d9) &&
+        dd_instruction(0xc98334, 0xa9016ffc) && dd_instruction(0xc98350, 0xf9400417) && dd_instruction(0xc98370, 0x97f9babc) &&   // stp x29,x30,[sp,#0x30]   (the confirmation's own prologue)
+        dd_instruction(0xc16d24, 0xa9017bfd) &&   // stp x29,x30,[sp,#0x10]   (the row description's)
+        dd_instruction(0xc16d30, 0xf9400028) &&   // ldr x8,[x1]              the PurchaseIdentifier
+        dd_ptr(base + DD_UPGRADE_CONFIRM_VT + DD_SLOT) == base + DD_UPGRADE_CONFIRM &&
+        dd_ptr(base + DD_UPGRADE_ROWS_VT + DD_SLOT) == base + DD_UPGRADE_ROWS;
+    dd_unlock = dd_upgrade && gate_filter_present(FILTER_DD_UNLOCK, 0xc97fc0) &&
+        dd_instruction(0xc97fc4, 0xf9000bf3) && dd_instruction(0xc97fcc, 0xf9400408) &&
+        dd_instruction(0xc97ff4, 0x97f9b78b) && dd_instruction(0xc98018, 0x17f9bb92) &&
+        dd_ptr(base + 0x1181ba8 + DD_SLOT) == base + 0xc97fc0;
+    for (unsigned i = 0; i < 3; i++) {
+        dd_extra_upgrade[i] = dd_upgrade && gate_obs_present(dd_upgrade_descriptors[i].obs) &&
+            dd_instruction(dd_upgrade_descriptors[i].op + 4, dd_upgrade_descriptors[i].next) &&
+            dd_ptr(base + dd_upgrade_descriptors[i].vt + DD_SLOT) == base + dd_upgrade_descriptors[i].op;
+    }
     dd_ios = ios;
     // The shop diagnostic's site (OBS 29, 0xe15690). Its neighbours must be the
     // retail words: the dispatch that follows is then the game's own, and the two
@@ -334,21 +393,37 @@ static void dd_validate(void) {
         dd_ptr(base + DD_ROSTER_PRIMARY_VT + DD_SLOT) == base + DD_ROSTER_PRIMARY_OP &&
         dd_ptr(base + DD_ROSTER_DETAILS_VT + DD_SLOT) == base + DD_ROSTER_DETAILS_OP;
     dd_base = base;
+    // Startup report (DM_DD_TOUCH_DEBUG=1): everything the guild policy needs, in one line, so a device log says which
+    // precondition is false instead of leaving it to a guess. Read-only.
+    dd_udiag("build %s | DM_TOUCH_INPUT=%s mode=%d | DM_DD_TOUCH_POLICY=%s | main %s | filter5 %d obs31 %d | "
+            "words %d%d%d | vtables %d%d | upgrade %s | pen mode %u ctrl %d owner %d",
+            DD_BUILD_TAG, getenv("DM_TOUCH_INPUT") ? getenv("DM_TOUCH_INPUT") : "(unset)",
+            dm_touch_input_mode(getenv("DM_TOUCH_INPUT")),
+            getenv("DM_DD_TOUCH_POLICY") ? getenv("DM_DD_TOUCH_POLICY") : "(unset)",
+            dd_main ? dd_main->build_id : "(none)",
+            gate_filter_present(FILTER_DD_UPGRADE, DD_UPGRADE_CONFIRM), gate_obs_present(OBS_DD_UPGRADE_ROWS),
+            dd_instruction(0xc98334, 0xa9016ffc) && dd_instruction(0xc98350, 0xf9400417) && dd_instruction(0xc98370, 0x97f9babc), dd_instruction(0xc16d24, 0xa9017bfd), dd_instruction(0xc16d30, 0xf9400028),
+            dd_ptr(base + DD_UPGRADE_CONFIRM_VT + DD_SLOT) == base + DD_UPGRADE_CONFIRM,
+            dd_ptr(base + DD_UPGRADE_ROWS_VT + DD_SLOT) == base + DD_UPGRADE_ROWS,
+            dd_upgrade ? "yes" : "no",
+            dd_word(base + 0x27dee2c), (int)*((uint8_t *)base + 0x27dec24), dd_pointer_owner());
 }
 static void dd_init(void) {
     const char *e = getenv("DM_DD_TOUCH_POLICY");
     if (!e || strcmp(e, "1") || strcmp(DM_GAME_ID, "01008F1008DA6000")) return;
     dd_validate();
     dd_probe = dd_probe_requested();   // diagnostic: exact opt-in only
+    LOG("DD guild initial unlock policy: %s", dd_unlock ? "purchase gate present" : "unavailable, original behavior");
 #if TARGET_OS_IPHONE
     // The iOS gesture policy (Press promotion, contact ownership) belongs to the
     // skill and shop bindings; the roster action does not need it.
     dm_touch_policy_activate(dd_valid && dd_ios);
-    LOG("DD touch policy: %s (iOS character skills: %s; Nomad merchandise: %s; town roster long-press details: %s)",
+    LOG("DD touch policy: %s (iOS character skills: %s; Nomad merchandise: %s; town roster long-press details: %s; guild upgrades: %s)",
         dd_valid ? "enabled, not runtime-validated" : "REFUSED: build/gates/instructions mismatch",
         dd_camp ? "combat and camping" : "combat only, no camping gate in this module",
         dd_shop ? "tap focuses, hold releases the game's own click once" : "unavailable, original behavior",
-        dd_roster ? "enabled, not runtime-validated" : "unavailable, original behavior");
+        dd_roster ? "enabled, not runtime-validated" : "unavailable, original behavior",
+        dd_upgrade ? "guild skills: tap focuses, a 0.5 s hold buys once" : "unavailable, original behavior");
     if (dd_probe_ok)
         LOG("DD shop probe: %s (DM_DD_SHOP_PROBE=1 records one line per change inside one iPhone contact; read-only)",
             dd_probe == 1 ? "enabled" : "off");
@@ -358,9 +433,10 @@ static void dd_init(void) {
     // policy is deliberately not activated, so the Mac touch/gesture stream and
     // the pointer bridge keep their original behaviour.
     dm_touch_policy_activate(0);
-    LOG("DD touch policy: %s (Mac: town roster long-press details %s; iOS skill/shop policies inactive; original gesture stream retained)",
+    LOG("DD touch policy: %s (Mac: town roster long-press details %s; iOS skill/shop/upgrade policies inactive; original gesture stream retained; guild upgrade gates %s)",
         dd_valid ? "enabled, not runtime-validated" : "REFUSED: build/gates/instructions mismatch",
-        dd_roster ? "enabled, not runtime-validated" : "unavailable, original behavior");
+        dd_roster ? "enabled, not runtime-validated" : "unavailable, original behavior",
+        dd_upgrade ? "present (iOS only)" : "missing");
 #endif
 }
 // Every gate runs inside the game's own code, so the caller is whichever guest
@@ -459,6 +535,38 @@ static void dd_shop_build(const uint64_t *r) {
     dd_shop_live_ns = dm_touch_now_ns();
     pthread_mutex_unlock(&dd_mu);
 }
+// OBS 31 (0xc16d20, the guild's row description callback): once per drawn upgrade row per
+// frame, after the price and the eligibility were resolved. Read-only; the gate replays the
+// original prologue. Everything it does is host-side bookkeeping.
+static void dd_upgrade_rows(const uint64_t *r) {
+    (void)r;
+    if (!dd_ready() || !dd_upgrade) return;
+    pthread_mutex_lock(&dd_mu);
+    uint64_t now = dm_touch_now_ns();
+    // One line when the rows appear or vanish (not per row, not per frame).
+    int was_live = dd_upgrade_live_ns && now - dd_upgrade_live_ns < DD_UPGRADE_NEAR_NS;
+    if (!was_live) dd_upgrade_nkeys = 0;
+    if (r && r[1]) {
+        uint32_t kind = dd_word(r[1]), id = dd_word(r[1] + 8);
+        unsigned i = 0;
+        for (; i < dd_upgrade_nkeys; i++)
+            if (dd_upgrade_keys[i].kind == kind && dd_upgrade_keys[i].id == id) break;
+        if (i == dd_upgrade_nkeys && i < 64) {
+            dd_upgrade_keys[i].kind = kind; dd_upgrade_keys[i].id = id; dd_upgrade_nkeys++;
+        }
+    }
+    dd_upgrade_live_ns = now;
+    if (!was_live) dd_udiag("guild upgrade rows are on screen (OBS 31 firing)");
+    pthread_mutex_unlock(&dd_mu);
+}
+static void dd_other_upgrade_rows(const uint64_t *r, unsigned i) {
+    (void)r;
+    if (!dd_ready() || !dd_extra_upgrade[i]) return;
+    dd_upgrade_rows(NULL);
+}
+static void dd_blacksmith_rows(const uint64_t *r) { dd_other_upgrade_rows(r, 0); }
+static void dd_trainer_rows(const uint64_t *r) { dd_other_upgrade_rows(r, 1); }
+static void dd_building_rows(const uint64_t *r) { dd_other_upgrade_rows(r, 2); }
 static void dd_frame_tick(const uint64_t *r) {
     (void)r;
     if (!dd_ready()) return;
@@ -495,7 +603,22 @@ static void dd_frame_tick(const uint64_t *r) {
     } else if (dd_tap_generation == s.generation && (!dd_shop_live_ns || now - dd_shop_live_ns > DD_SHOP_FORGET_NS)) {
         dd_tap_generation = 0;
     }
-    dm_touch_hold_tap(s.generation && dd_tap_generation == s.generation);
+    // The guild's upgrade list, armed the same way: while its rows are being described, a
+    // contact that goes down on the iPhone is held in the recognizer's tap mode, so a finger
+    // kept still for 0.5 s still ends in the Tap that the game's click comes from. Without
+    // it a held finger would be promoted to Press and its release would be Complete - no
+    // click, and the hold could never buy anything.
+    if (s.phase == DM_CONTACT_CANCELLED) {
+        dd_upgrade_generation = 0;
+    } else if (ios && dd_upgrade && dm_touch_input_mode(getenv("DM_TOUCH_INPUT")) == DM_TOUCH_INPUT_ON &&
+               s.count == 1 && s.phase != DM_CONTACT_RELEASED &&
+               dd_upgrade_live_ns && now - dd_upgrade_live_ns < DD_UPGRADE_NEAR_NS) {
+        if (dd_upgrade_generation != s.generation)
+            dd_udiag("contact %llu: latched in the recognizer's tap mode (rows live, so a 0.5 s hold can still click)",
+                    (unsigned long long)s.generation);
+        dd_upgrade_generation = s.generation;
+    }
+    dm_touch_hold_tap(s.generation && (dd_tap_generation == s.generation || dd_upgrade_generation == s.generation));
     if (!own || s.phase == DM_CONTACT_CANCELLED || (s.count != 1 && s.phase != DM_CONTACT_RELEASED)) {
         // A moved, second-fingered or controller-taken contact may not run the
         // toggle again, not even through the click the game sends on lift. The
@@ -674,6 +797,100 @@ static int dd_shop_filter(const uint64_t *r) {
         dd_note("contact down: purchase click withheld; the lift after >=0.5 s is the game's own click");
     pthread_mutex_unlock(&dd_mu);
     return allow;
+}
+// Judge a contact before the game's UpgradeTreeDisplay click body runs.
+static int dd_upgrade_judge(const uint64_t *r) {
+    (void)r;   // the confirmation's own arguments (its capture and the PurchaseIdentifier) are left untouched
+    if (!dd_ready()) { dd_udiag("click: policy not initialised (DM_DD_TOUCH_POLICY off, or another title) -> PASS"); return 1; }
+    if (!dd_upgrade) { dd_udiag("click: gates invalid for this build -> PASS"); return 1; }
+    dm_contact_snapshot s; dm_touch_contact_snapshot(&s);
+    // The click has to belong to an iPhone contact. This is the only attribution that is certain on the device: the
+    // overlay stamps DM_CONTACT_IOS on every point it publishes, and nothing else does.
+    if (s.source != DM_CONTACT_IOS) {
+        dd_udiag("click: source %d (not the iPhone) -> PASS", s.source);
+        return 1;
+    }
+    // Direct touch only. The trackpad has its own gesture layer (a tap there is a deliberate click at the pointer) and
+    // "touch off" means the game should see nothing: neither may be re-shaped here.
+    int mode = dm_touch_input_mode(getenv("DM_TOUCH_INPUT"));
+    if (mode != DM_TOUCH_INPUT_ON) { dd_udiag("click: input mode %d (not direct touch) -> PASS", mode); return 1; }
+    // No contact at all: a controller or the game itself dispatched this click. Nothing to judge.
+    if (s.count == 0 && s.phase != DM_CONTACT_RELEASED && s.phase != DM_CONTACT_CANCELLED) {
+        dd_udiag("click: no iPhone contact (count 0, phase %d) -> PASS", s.phase);
+        return 1;
+    }
+    uint64_t age_ms = s.down_ns ? (dm_touch_now_ns() - s.down_ns) / 1000000ull : 0ull;
+    pthread_mutex_lock(&dd_mu);
+    if (dd_upgrade_click_generation != s.generation) { dd_upgrade_click_generation = s.generation; dd_upgrade_used = 0; }
+    int allow = 0;
+    if (s.phase == DM_CONTACT_CANCELLED || (dd_blocked_generation && dd_blocked_generation == s.generation)) {
+        dd_udiag("contact %llu: moved/cancelled/second finger (phase %d) -> BLOCK", (unsigned long long)s.generation, s.phase);
+        pthread_mutex_unlock(&dd_mu);
+        return 0;
+    }
+    if (dd_upgrade_used) {
+        dd_udiag("contact %llu: already confirmed once -> BLOCK", (unsigned long long)s.generation);
+    } else if (s.phase == DM_CONTACT_PRESS) {
+        allow = 1; dd_upgrade_used = 1;
+        dd_udiag("contact %llu: press after %llu ms -> PASS once", (unsigned long long)s.generation,
+                (unsigned long long)age_ms);
+    } else if (s.phase == DM_CONTACT_RELEASED && s.down_ns && dm_touch_now_ns() - s.down_ns >= DD_HOLD_NS) {
+        allow = 1; dd_upgrade_used = 1;
+        dd_udiag("contact %llu: release after %llu ms -> PASS once", (unsigned long long)s.generation,
+                (unsigned long long)age_ms);
+    } else {
+        dd_udiag("contact %llu: short tap (%llu ms, phase %d, count %d) -> BLOCK", (unsigned long long)s.generation,
+                (unsigned long long)age_ms, s.phase, s.count);
+    }
+    pthread_mutex_unlock(&dd_mu);
+    return allow;
+}
+// The shared UpgradeTree entry also serves other facilities. Match its
+// PurchaseIdentifier kind/id to the guild's own observed descriptor callbacks.
+static int dd_upgrade_identifier(const uint64_t *r, uint32_t kind, uint32_t id, const char *path) {
+    int match = 0;
+    pthread_mutex_lock(&dd_mu);
+    dm_contact_snapshot contact; dm_touch_contact_snapshot(&contact);
+    uint64_t now = dm_touch_now_ns();
+    if ((dd_upgrade_live_ns && now - dd_upgrade_live_ns < DD_UPGRADE_NEAR_NS) ||
+        (contact.generation && dd_upgrade_generation == contact.generation))
+        for (unsigned i = 0; i < dd_upgrade_nkeys; i++)
+            if (dd_upgrade_keys[i].kind == kind && dd_upgrade_keys[i].id == id) { match = 1; break; }
+    pthread_mutex_unlock(&dd_mu);
+    dd_udiag("prepurchase %s kind=%u id=%u guild=%d", path, kind, id, match);
+    return !match || dd_upgrade_judge(r);
+}
+// This exact layout is pinned by c95f30/c96114 and bf2480: x7 is the
+// description pair copied to tree+0x130, each std::function's __f_ is +0x20.
+static int dd_upgrade_tree_supported(uintptr_t tree) {
+    if (!tree || dd_ptr(tree) != dd_base + 0x1181770) return 0;
+    for (unsigned slot = 0x150; slot <= 0x180; slot += 0x30) {
+        uintptr_t fn = dd_ptr(tree + slot);
+        if (!fn) continue;
+        uintptr_t vt = dd_ptr(fn);
+        if (vt == dd_base + DD_UPGRADE_ROWS_VT) return 1;
+        for (unsigned i = 0; i < 3; i++)
+            if (dd_extra_upgrade[i] && vt == dd_base + dd_upgrade_descriptors[i].vt) return 1;
+    }
+    return 0;
+}
+static int dd_upgrade_filter(const uint64_t *r) {
+    if (!dd_ready() || !dd_upgrade || !r || !r[0]) return 1;
+    uintptr_t tree = dd_ptr(r[0] + 8);
+    if (dd_upgrade_tree_supported(tree)) {
+        dd_udiag("prepurchase level: verified tree description binding");
+        return dd_upgrade_judge(r);
+    }
+    // Retain the already device-verified level-upgrade identification.
+    if (!tree) return 1;
+    return dd_upgrade_identifier(r, dd_word(tree + 0x90), dd_word(tree + 0x94), "level");
+}
+static int dd_unlock_filter(const uint64_t *r) {
+    if (!dd_ready() || !dd_unlock || !r || !r[0]) return 1;
+    uintptr_t tree = dd_ptr(r[0] + 8);
+    int supported = dd_upgrade_tree_supported(tree);
+    dd_udiag("prepurchase unlock: tree description binding=%d", supported);
+    return !supported || dd_upgrade_judge(r);
 }
 // Nomad shop diagnostic (OBS 29). Read-only: it records the game's own click
 // byte next to every candidate "row under the finger" byte, so one tap and one
@@ -901,7 +1118,8 @@ int dd_test_validate(void) { dd_validate(); return dd_roster; }
 int dd_test_valid(void) { return dd_valid; }
 int dd_test_ios(void) { return dd_ios; }
 void dd_test_roster_click(uintptr_t elem, uintptr_t fp) { uint64_t r[32] = {0}; r[24] = elem; r[29] = fp; dd_roster_click(r); }
-void dd_test_init(uintptr_t base) { dd_base = base; dd_valid = 1; dd_camp = dd_shop = dd_roster = 1; dd_replay = 0; dd_shop_click_generation = dd_blocked_generation = dd_roster_fired = 0; dd_shop_click_used = 0; dd_shop_live_ns = dd_tap_generation = 0; memset(&dd_hold_state, 0, sizeof dd_hold_state); memset(&dd_hover_state, 0, sizeof dd_hover_state); }
+void dd_test_init(uintptr_t base) { dd_base = base; dd_valid = 1; dd_camp = dd_shop = dd_roster = 1; dd_replay = 0; dd_shop_click_generation = dd_blocked_generation = dd_roster_fired = 0; dd_shop_click_used = 0; dd_shop_live_ns = dd_tap_generation = 0;
+    dd_upgrade_nkeys = 0; dd_upgrade_live_ns = dd_upgrade_generation = dd_upgrade_click_generation = 0; dd_upgrade_used = 0; memset(&dd_hold_state, 0, sizeof dd_hold_state); memset(&dd_hover_state, 0, sizeof dd_hover_state); }
 void dd_test_shop(int on) { dd_shop = on; }
 int dd_test_shop_filter(uintptr_t action) { uint64_t r[32] = {action}; return dd_shop_filter(r); }
 // OBS 30: the site passes the row's freshly built binding in x24.
@@ -922,6 +1140,30 @@ void dd_test_probe(int on) {
     memset(&dd_stat, 0, sizeof dd_stat); memset(dd_vt_seen, 0, sizeof dd_vt_seen); dd_vt_n = 0;
 }
 void dd_test_enable(int on) { dd_valid = on; }
+void dd_test_upgrade(int on) { dd_upgrade = dd_unlock = on; }
+int dd_test_upgrade_filter(void) { return dd_upgrade_judge(NULL); }
+int dd_test_upgrade_tree(uint32_t kind, uint32_t id) {
+    uint8_t tree[0xa0] = {0}; memcpy(tree + 0x90, &kind, 4); memcpy(tree + 0x94, &id, 4);
+    uintptr_t action[2] = {0, (uintptr_t)tree}; uint64_t r[32] = {(uintptr_t)action};
+    return dd_upgrade_filter(r);
+}
+int dd_test_unlock(uint32_t kind, uint32_t id) {
+    uint8_t tree[0x190] = {0}; uintptr_t vt = dd_base + 0x1181770;
+    memcpy(tree, &vt, sizeof vt); uintptr_t descvt = dd_base + DD_UPGRADE_ROWS_VT;
+    uintptr_t desc = (uintptr_t)&descvt; memcpy(tree + 0x150, &desc, sizeof desc);
+    uint32_t action[8] = {0}; uintptr_t ptr = (uintptr_t)tree;
+    if (kind == 17) memcpy((uint8_t *)action + 8, &ptr, sizeof ptr);
+    action[4] = kind; action[6] = id;
+    uint64_t r[32] = {(uintptr_t)action}; return dd_unlock_filter(r);
+}
+void dd_test_upgrade_key(uint32_t kind, uint32_t id) {
+    uint32_t key[3] = {kind, 0, id}; uint64_t r[32] = {0, (uintptr_t)key}; dd_upgrade_rows(r);
+}
+
+void dd_test_upgrade_rows(void) { dd_upgrade_rows(NULL); }
+uint64_t dd_test_upgrade_live(void) { return dd_upgrade_live_ns; }
+uint64_t dd_test_upgrade_generation(void) { return dd_upgrade_generation; }
+int dd_test_upgrade_ok(void) { return dd_upgrade; }
 void dd_test_camp(int on) { dd_camp = on; }
 void dd_test_frame(void) { dd_frame_tick(NULL); }
 int dd_test_holds(void) { return dd_hold_state.copy != 0; }
@@ -939,6 +1181,12 @@ __attribute__((constructor)) static void dd_touch_register(void) {
     gate_obs_set(OBS_DD_ROSTER_CLICK, dd_roster_click);
     gate_obs_set(OBS_DD_SHOP_UPDATE, dd_shop_update);   // diagnostic only; inert unless DM_DD_SHOP_PROBE
     gate_obs_set(OBS_DD_SHOP_BUILD, dd_shop_build);     // the Nomad supply display is drawing its purchase rows
+    gate_obs_set(OBS_DD_UPGRADE_ROWS, dd_upgrade_rows); // the guild's upgrade rows are on screen
+    gate_obs_set(OBS_DD_BLACKSMITH_ROWS, dd_blacksmith_rows);
+    gate_obs_set(OBS_DD_CAMP_TRAINER_ROWS, dd_trainer_rows);
+    gate_obs_set(OBS_DD_BUILDING_ROWS, dd_building_rows);
+    gate_filter_set(FILTER_DD_UPGRADE, dd_upgrade_filter);
+    gate_filter_set(FILTER_DD_UNLOCK, dd_unlock_filter);
     gate_filter_set(FILTER_DD_SKILL, dd_skill_filter);
     gate_filter_set(FILTER_DD_CAMP, dd_skill_filter);   // the same decision covers both grids' toggles
     gate_filter_set(FILTER_DD_SHOP_PRIMARY, dd_shop_filter);
