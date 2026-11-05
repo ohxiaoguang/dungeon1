@@ -72,6 +72,12 @@
 #include <stdarg.h>
 #include <stddef.h>
 
+// Optional hero status panel collector (hle_dd_hero.c). A weak empty definition
+// keeps the host tests that link hle_dd_touch.c alone working; the strong
+// definition in hle_dd_hero.c wins in the real host. It runs before dd_ready():
+// the panel has its own switch and must work independently of the touch policy.
+__attribute__((weak)) void dd_hero_frame_tick(void) {}
+
 #define DD_HOLD_NS 500000000ull   // 0.5 s: the same threshold the recognizer's Press uses
 #define DD_WRAPPER 0xe39fe0u      // ShowSkillGrid::$_0::operator()(), vtable 0x11956b8 +0x30
 #define DD_WRAPPER_VT 0x11956b8u  // __func<ShowSkillGrid::$_0, void()>
@@ -569,6 +575,7 @@ static void dd_trainer_rows(const uint64_t *r) { dd_other_upgrade_rows(r, 1); }
 static void dd_building_rows(const uint64_t *r) { dd_other_upgrade_rows(r, 2); }
 static void dd_frame_tick(const uint64_t *r) {
     (void)r;
+    dd_hero_frame_tick();   // hero status snapshot, read-only, its own switch
     if (!dd_ready()) return;
     pthread_mutex_lock(&dd_mu);
     dd_frame++;

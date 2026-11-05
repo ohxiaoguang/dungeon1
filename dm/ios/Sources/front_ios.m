@@ -9,6 +9,7 @@
 #include "hle.h"
 #include "dm.h"
 #include "haptics_apple.h"
+#include "dd_hero.h"   // read-only hero status snapshot (hle_dd_hero.c)
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
@@ -41,10 +42,108 @@ static UILabel *front_ios_fps_label(void);
 }
 @end
 
+// Hero status panel: a read-only overlay drawn from the host's snapshot
+// (dm_hero_snapshot_take). It never takes touch events - the gamepad layer
+// below keeps every tap - and hides itself whenever the snapshot is invalid, so
+// no stale or invented data is ever shown.
+@interface DmHeroPanel : UIView
+@property (nonatomic, strong) UILabel *body;
+@property (nonatomic, strong) NSTimer *timer;
+@property (nonatomic) BOOL enemySide;
+- (instancetype)initWithEnemySide:(BOOL)enemy;
+@end
+
+@implementation DmHeroPanel
+- (instancetype)initWithEnemySide:(BOOL)enemy {
+    if ((self = [super initWithFrame:CGRectZero])) {
+        _enemySide = enemy;
+        self.userInteractionEnabled = NO;
+        self.backgroundColor = [UIColor colorWithWhite:0 alpha:0.58];
+        self.layer.cornerRadius = 7;
+        self.layer.masksToBounds = YES;
+        self.layer.borderWidth = 0.5;
+        self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.16].CGColor;
+        _body = [[UILabel alloc] initWithFrame:CGRectZero];
+        _body.numberOfLines = 0;
+        _body.lineBreakMode = NSLineBreakByTruncatingTail;
+        _body.userInteractionEnabled = NO;
+        _body.textColor = UIColor.whiteColor;
+        [self addSubview:_body];
+        __weak DmHeroPanel *weak = self;
+        _timer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) {
+            (void)t; [weak refresh];
+        }];
+        [self refresh];
+    }
+    return self;
+}
+- (void)refresh {
+    if (!dm_hero_panel_enabled()) { self.hidden = YES; return; }
+    dd_hero_snapshot_t s;
+    dm_hero_snapshot_take(&s);
+    if (_enemySide ? !s.enemy_valid : !s.valid) { self.hidden = YES; return; }
+    int n = _enemySide ? s.enemy_buff_count : s.buff_count;
+    const dd_hero_buff_t *list = _enemySide ? s.enemy_buffs : s.buffs;
+    NSMutableAttributedString *a = [[NSMutableAttributedString alloc] init];
+    UIFont *titleFont = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightBold];
+    NSString *title = _enemySide ? @"ENEMY\n" : @"HERO\n";
+    [a appendAttributedString:[[NSAttributedString alloc]
+        initWithString:title attributes:@{NSFontAttributeName: titleFont,
+        NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.55]}]];
+    if (!_enemySide) {
+        NSMutableString *head = [NSMutableString string];
+        if (s.name[0]) [head appendFormat:@"%s", s.name];
+        if (s.class_name[0]) [head appendFormat:@"\u2002%s", s.class_name];
+        if (head.length) [head appendString:@"\n"];
+        if (s.has_stress && s.has_battle) {
+            if (s.has_hp) [head appendFormat:@"生命 %d\u2002压力 %d/%d\n", s.hp, s.stress, s.stress_max];
+            else [head appendFormat:@"压力 %d/%d\n", s.stress, s.stress_max];
+        }
+        if (head.length) [a appendAttributedString:[[NSAttributedString alloc]
+            initWithString:head attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
+            NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.9]}]];
+    }
+    int shown = n > 7 ? 7 : n;
+    for (int i = 0; i < shown; i++) {
+        const dd_hero_buff_t *b = &list[i];
+        // The row IS the game's own line; the only thing added here is colour,
+        // taken from the sign the game itself printed.
+        NSString *line = b->line[0] ? [NSString stringWithUTF8String:b->line] : nil;
+        if (!line.length) continue;
+        UIColor *c = b->negative ? [UIColor colorWithRed:1 green:0.62 blue:0.45 alpha:1]
+                    : (b->line[0] == '+' ? [UIColor colorWithRed:0.55 green:0.86 blue:1 alpha:1]
+                                         : UIColor.whiteColor);
+        [a appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[NSString stringWithFormat:@"%@\n", line]
+            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
+            NSForegroundColorAttributeName: c}]];
+    }
+    if (n > shown) {
+        [a appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[NSString stringWithFormat:@"+%d\n", n - shown]
+            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:9],
+            NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.5]}]];
+    }
+    if (n <= 0) {   // a verified unit with no active effects: say so, do not hide
+        [a appendAttributedString:[[NSAttributedString alloc]
+            initWithString:@"—\n" attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
+            NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.45]}]];
+    }
+    _body.attributedText = a;
+    self.hidden = NO;
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    _body.frame = CGRectInset(self.bounds, 8, 6);
+}
+@end
+
 @interface DmRootVC : UIViewController
 @property (nonatomic, strong) DmGameView *game;
 @property (nonatomic, strong) UIView *pad;
 @property (nonatomic, strong) UILabel *fps;
+@property (nonatomic, strong) DmHeroPanel *heroLeft;
+@property (nonatomic, strong) DmHeroPanel *heroRight;
 @property (nonatomic) BOOL launched;
 - (void)startGame;
 @end
@@ -78,6 +177,12 @@ static void launcher_done(void) { [g_root startGame]; }
     [self.view addSubview:self.pad];
     self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
     if (self.fps) [self.view addSubview:self.fps];
+    if (dm_hero_panel_enabled()) {   // optional: DM_DD_HERO_PANEL, its own switch, independent of the input mode
+        self.heroLeft = [[DmHeroPanel alloc] initWithEnemySide:NO];
+        self.heroRight = [[DmHeroPanel alloc] initWithEnemySide:YES];
+        [self.view addSubview:self.heroLeft];
+        [self.view addSubview:self.heroRight];
+    }
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     front_ios_boot();
@@ -91,6 +196,14 @@ static void launcher_done(void) { [g_root startGame]; }
     if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
+    }
+    if (self.heroLeft) {   // left band of the picture; the right band mirrors it for the selected enemy
+        CGRect g = self.game.frame;
+        CGFloat pw = MIN(230, MAX(150, g.size.width * 0.26));
+        CGFloat ph = MIN(210, g.size.height * 0.44);
+        CGFloat py = g.origin.y + g.size.height * 0.24;
+        self.heroLeft.frame = CGRectMake(g.origin.x + 8, py, pw, ph);
+        self.heroRight.frame = CGRectMake(g.origin.x + g.size.width - pw - 8, py, pw, ph);
     }
 }
 - (void)viewDidAppear:(BOOL)a {

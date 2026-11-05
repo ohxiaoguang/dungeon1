@@ -14,3 +14,4 @@ DM_TOUCH_HAPTICS	toggle	-	0	always	Touch feedback	Haptic clicks when pressing th
 DM_RUMBLE	toggle	-	0	always	Game rumble	Vibration from the game on your phone or connected controller.
 DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Rumble strength	Adjusts game rumble alongside the game's own vibration setting.
 DM_DD_TOUCH_POLICY	toggle	-	0	DM_GAME_ID==01008F1008DA6000	Touch interaction policy (experimental)	Improves touch interactions that are prone to accidental input. See the input mode guide for details.
+DM_DD_HERO_PANEL	toggle	-	0	DM_GAME_ID==01008F1008DA6000	Hero status panel	Show the selected hero's live effects on the left of the game screen. Independent of the input mode.

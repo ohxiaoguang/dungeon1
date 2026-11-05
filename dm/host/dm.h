@@ -83,7 +83,8 @@ enum { OBS_MOVIE_RING_LINK = 19, OBS_MOVIE_RING_UNLINK = 20,   // Metroid Dread 
        OBS_DD_SHOP_BUILD = 30,                                 // Darkest Dungeon 1.3.0: a merchandise row's purchase binding was just built (the supply display is drawing)
        OBS_DD_UPGRADE_ROWS = 31,                               // Darkest Dungeon 1.3.0: the guild's upgrade row is being described (its price/eligibility callback ran: the rows are on screen)
        OBS_DD_BLACKSMITH_ROWS = 32, OBS_DD_CAMP_TRAINER_ROWS = 33, OBS_DD_BUILDING_ROWS = 34,
-       OBS_MAX = 35 };
+       OBS_DD_HERO_ACTOR = 35,                                 // Darkest Dungeon 1.3.0: the Actor* passed to the buff icon tooltip builder (0xcd3d10)
+       OBS_MAX = 36 };
 void gate_obs_set(int id, void (*fn)(const uint64_t *regs));
 int gate_obs_present(int id);
 // Entry filters are separate from read-only observations: deny returns integer

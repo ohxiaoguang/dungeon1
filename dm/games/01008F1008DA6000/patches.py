@@ -60,6 +60,10 @@ OBS = {
         (0xbf3010, 32, 'd102c3ff', 'observe blacksmith weapon and armour upgrade descriptions'),
         (0xbff6d0, 33, 'aa0203e1', 'observe camping trainer skill descriptions'),
         (0xbfaf70, 34, 'd10103ff', 'observe building upgrade descriptions'),
+        # The buff icon tooltip builder runs once per icon per frame with x1 = Actor*.
+        # Read-only: the gate replays the original prologue. The hero status panel
+        # uses it to learn which unit the game is describing for that frame.
+        (0xcd3d10, 35, '6db63bef', 'observe the Actor passed to the buff icon tooltip builder'),
     ],
 }
 

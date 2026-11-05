@@ -172,3 +172,7 @@ confirmation; compiling it is not that confirmation. No separate iPad report exi
 See [A–F evidence](compatibility.md). This is the Nintendo Switch 1.3.0 adaptation,
 not a PC/Steam resource importer or official iOS release. Matching owned Switch
 DLC must be prepared as described in [DLC support](dlc.md).
+
+## Hero status panel investigation
+
+The proposed experimental panel is not available yet. There is no setting to enable it, and no new panel App/IPA has been produced. The [audit](darkest-dungeon-hero-status-audit.md) records native tooltip candidates and the missing runtime validation. Continue to use the game’s original hero details and hover tooltips.

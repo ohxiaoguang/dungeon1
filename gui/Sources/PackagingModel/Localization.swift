@@ -223,6 +223,8 @@ public struct GUIText: ExpressibleByStringLiteral, ExpressibleByStringInterpolat
         "Frame rate": "帧率",
         "Frame-rate counter": "显示帧率",
         "Performance HUD": "性能面板",
+        "Hero status panel": "英雄状态面板",
+        "Show the selected hero's live effects on the left of the game screen. Independent of the input mode.": "在游戏画面左侧显示当前选中英雄的实时效果，与操作模式无关。",
         "Render scale": "渲染比例",
         "Touch feedback": "触控反馈",
         "Haptic clicks when pressing the virtual gamepad's controls.": "按下虚拟手柄按键时提供触觉反馈。",

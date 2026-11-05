@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — investigation only
+
+- Add a Build-ID-gated, read-only hero UI RTTI inventory tool and expand the
+  native UI/tooltip audit with vtable and instruction-reference evidence.
+- Live hero status extraction, launcher toggle and dual-platform panel remain
+  unimplemented; no new panel App/IPA or gameplay acceptance is claimed.
+
 ## Initial standalone version — 2026-10-31
 
 - Import the Darkest Dungeon adaptation from maintainer commit

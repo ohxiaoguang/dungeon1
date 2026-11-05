@@ -291,3 +291,7 @@ No. It only changes how fast the pointer moves; a click always lands where the p
 
 For anything not covered here, open the question mark beside **Input mode** in the launcher, or see the more
 detailed settings guide in [user-guide.md](user-guide.md).
+
+## Hero status panel (under investigation)
+
+There is no usable live hero status panel or launcher switch in this revision. Use the game’s existing tooltips for detailed Buff / Debuff values. Native UI and tooltip candidates have been located statically; dungeon selection and text lifetime still need runtime verification. See the [audit](darkest-dungeon-hero-status-audit.md). This investigation does not change touch, virtual trackpad, mouse or controller code.

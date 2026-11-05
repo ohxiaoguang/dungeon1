@@ -16,6 +16,7 @@
 #include "hle.h"
 #include "pad_slots.h"
 #include "haptics_apple.h"
+#include "dd_hero.h"   // read-only hero status snapshot (hle_dd_hero.c)
 #include <signal.h>
 #include <math.h>
 
@@ -167,18 +168,155 @@ static void pads_start(void) {
     pads_changed(nil);
 }
 
+// Hero status panel: a read-only overlay drawn from the host's snapshot
+// (dm_hero_snapshot_take). hitTest returns nil, so every click and drag still
+// reaches DmGameView; the view hides itself when the snapshot is invalid.
+@interface DmHeroPanelView : NSView
+@property (nonatomic) BOOL enemySide;
+@property (nonatomic, strong) NSTimer *timer;
+- (instancetype)initWithEnemySide:(BOOL)enemy;
+@end
+
+@implementation DmHeroPanelView
+- (BOOL)isFlipped { return YES; }   // draw top-down like the iOS panel
+- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }   // clicks go to the game view below
+- (instancetype)initWithEnemySide:(BOOL)enemy {
+    if ((self = [super initWithFrame:NSZeroRect])) {
+        _enemySide = enemy;
+        self.wantsLayer = YES;
+        self.layer.backgroundColor = [NSColor colorWithWhite:0 alpha:0.58].CGColor;
+        self.layer.cornerRadius = 7;
+        self.layer.borderWidth = 0.5;
+        self.layer.borderColor = [NSColor colorWithWhite:1 alpha:0.16].CGColor;
+        __weak DmHeroPanelView *weak = self;
+        _timer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) {
+            (void)t; [weak refresh];
+        }];
+        [self refresh];
+    }
+    return self;
+}
+- (void)refresh {
+    if (!dm_hero_panel_enabled()) { self.hidden = YES; return; }
+    dd_hero_snapshot_t s;
+    dm_hero_snapshot_take(&s);
+    self.hidden = _enemySide ? !s.enemy_valid : !s.valid;   // visible while a unit is verified
+    self.needsDisplay = YES;
+}
+- (void)drawRect:(NSRect)dirty {
+    (void)dirty;
+    if (!dm_hero_panel_enabled()) return;
+    dd_hero_snapshot_t s;
+    dm_hero_snapshot_take(&s);
+    int n = _enemySide ? s.enemy_buff_count : s.buff_count;
+    const dd_hero_buff_t *list = _enemySide ? s.enemy_buffs : s.buffs;
+    NSFont *titleFont = [NSFont monospacedSystemFontOfSize:9 weight:NSFontWeightBold];
+    NSFont *nameFont = [NSFont systemFontOfSize:10];
+    NSFont *valueFont = [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightSemibold];
+
+    NSRect box = NSInsetRect(self.bounds, 8, 6);
+    CGFloat x0 = NSMinX(box), right = NSMaxX(box);
+    CGFloat y = NSMinY(box);
+    NSString *title = _enemySide ? @"ENEMY" : @"HERO";
+    [title drawAtPoint:NSMakePoint(x0, y) withAttributes:@{NSFontAttributeName: titleFont,
+        NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:0.55]}];
+    y += 14;
+    if (!_enemySide) {   // who we are looking at, straight from the game's Actor
+        NSString *who = s.name[0] ? [NSString stringWithUTF8String:s.name] : nil;
+        if (s.class_name[0]) {
+            NSString *cls = [NSString stringWithUTF8String:s.class_name];
+            who = who ? [NSString stringWithFormat:@"%@\u2002%@", who, cls] : cls;
+        }
+        if (who.length) {
+            [who drawAtPoint:NSMakePoint(x0, y) withAttributes:@{NSFontAttributeName: nameFont,
+                NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:0.92]}];
+            y += 14;
+        }
+        if (s.has_stress && s.has_battle) {   // the bar values, as the game holds them
+            NSString *bars = s.has_hp
+                ? [NSString stringWithFormat:@"生命 %d\u2002压力 %d/%d", s.hp, s.stress, s.stress_max]
+                : [NSString stringWithFormat:@"压力 %d/%d", s.stress, s.stress_max];
+            [bars drawAtPoint:NSMakePoint(x0, y) withAttributes:@{NSFontAttributeName: valueFont,
+                NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:0.85]}];
+            y += 14;
+        }
+    }
+
+    NSMutableParagraphStyle *trunc = [[NSMutableParagraphStyle alloc] init];
+    trunc.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSDictionary *nameAttr = @{NSFontAttributeName: nameFont,
+                               NSForegroundColorAttributeName: NSColor.whiteColor,
+                               NSParagraphStyleAttributeName: trunc};
+    NSDictionary *valueAttrBlue = @{NSFontAttributeName: valueFont,
+        NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.55 green:0.86 blue:1 alpha:1]};
+    NSDictionary *valueAttrWarm = @{NSFontAttributeName: valueFont,
+        NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1 green:0.62 blue:0.45 alpha:1]};
+    int shown = n > 8 ? 8 : n;
+    CGFloat rowH = 14;
+    for (int i = 0; i < shown; i++) {
+        const dd_hero_buff_t *b = &list[i];
+        // The row IS the game's own line; the only thing added here is colour,
+        // taken from the sign the game itself printed.
+        NSString *line = b->line[0] ? [NSString stringWithUTF8String:b->line] : nil;
+        if (!line.length) continue;
+        NSDictionary *lineAttr = b->negative ? valueAttrWarm
+            : (b->line[0] == '+' ? valueAttrBlue : nameAttr);
+        NSSize vs = [line sizeWithAttributes:lineAttr];
+        if (vs.width <= right - x0) {   // fits: keep the game's own text order
+            [line drawAtPoint:NSMakePoint(x0, y) withAttributes:lineAttr];
+        } else {                        // too long: truncate, no reinterpretation
+            [line drawWithRect:NSMakeRect(x0, y, right - x0, rowH)
+                       options:NSStringDrawingTruncatesLastVisibleLine | NSStringDrawingUsesLineFragmentOrigin
+                    attributes:nameAttr];
+        }
+        y += rowH;
+    }
+    if (n > shown) {
+        [[NSString stringWithFormat:@"+%d", n - shown]
+            drawAtPoint:NSMakePoint(x0, y) withAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:9],
+            NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:0.5]}];
+        y += 12;
+    }
+    if (n <= 0) {   // a verified unit with no active effects: say so, do not hide
+        [@"\u2014" drawAtPoint:NSMakePoint(x0, y) withAttributes:@{NSFontAttributeName: nameFont,
+            NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:0.45]}];
+    }
+}
+@end
+
 // Mouse as a single-point touchscreen (front.h dm_touch_set): left button down / drag = finger 0, release = lifted. The content view takes the clicks,
 // not a window-wide event monitor, so clicks on the title bar, the window buttons and the resize edges still reach AppKit.
 @interface DmGameView : NSView {
     NSTrackingArea *_mouseTracking;
     uint32_t _mouseButtons;
     dm_swipe _swipe;          // the contact a two-finger trackpad swipe is turning into (dm_swipe.h)
+    DmHeroPanelView *_heroLeft;
+    DmHeroPanelView *_heroRight;
 }
 - (void)mouseFocusChanged:(BOOL)focused;
 - (void)swipeWheel:(NSEvent *)e;
 - (void)swipeEnd:(BOOL)lift;
 @end
 @implementation DmGameView
+// Called after the view's backing layer has been replaced with the game's
+// CAMetalLayer: subviews added before that would lose their layer tree.
+- (void)installHeroPanels {
+    if (_heroLeft || !dm_hero_panel_enabled()) return;   // DM_DD_HERO_PANEL: its own switch
+    _heroLeft = [[DmHeroPanelView alloc] initWithEnemySide:NO];
+    _heroRight = [[DmHeroPanelView alloc] initWithEnemySide:YES];
+    [self addSubview:_heroLeft];
+    [self addSubview:_heroRight];
+    [self layoutHeroPanels];
+}
+- (void)layoutHeroPanels {
+    if (!_heroLeft) return;
+    NSRect pic = [self pictureRect];
+    CGFloat pw = MIN(230, MAX(150, pic.size.width * 0.26));
+    CGFloat ph = MIN(210, pic.size.height * 0.44);
+    CGFloat py = pic.origin.y + pic.size.height * 0.32;   // same visual band as the iOS panel (top 24%)
+    _heroLeft.frame = NSMakeRect(pic.origin.x + 8, py, pw, ph);
+    _heroRight.frame = NSMakeRect(pic.origin.x + pic.size.width - pw - 8, py, pw, ph);
+}
 - (BOOL)pointerPosition:(NSEvent *)e x:(float *)x y:(float *)y {
     NSPoint point = e ? e.locationInWindow : self.window.mouseLocationOutsideOfEventStream;
     NSPoint p = [self convertPoint:point fromView:nil]; NSSize b = self.bounds.size;
@@ -331,7 +469,7 @@ static int front_swipe_enabled(void) {
     NSSize px = [self convertSizeToBacking:self.bounds.size]; if (px.width < 1 || px.height < 1 || CGSizeEqualToSize(l.drawableSize, px)) return;
     l.drawableSize = px; LOG("front end: drawable %.0fx%.0f", px.width, px.height);
 }
-- (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; }
+- (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; [self layoutHeroPanels]; }
 - (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self fitDrawable]; }
 @end
 
@@ -379,6 +517,7 @@ void front_run(void (*guest)(void)) {
         g_layer.contentsScale = win.backingScaleFactor;
         if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) { g_layer.developerHUDProperties = @{@"mode": @"default"}; LOG("front end: Metal performance HUD on (DM_METAL_HUD)"); }   // Apple's HUD over the game: frame rate, frame and GPU time, memory
         v.layer = g_layer; [(DmGameView *)v fitDrawable];
+        [(DmGameView *)v installHeroPanels];   // after the CAMetalLayer is in place
         [win center];
         [win makeKeyAndOrderFront:nil];
         g_screen_fps = (int)(win.screen ?: NSScreen.mainScreen).maximumFramesPerSecond;

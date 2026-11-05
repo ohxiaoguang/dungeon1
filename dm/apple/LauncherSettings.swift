@@ -26,6 +26,7 @@ func settingPlacement(_ env: String) -> SettingPlacement {
     switch env {
     case "DM_SHOW_FPS",              // diagnostics
          "DM_METAL_HUD",             // Apple's HUD over the picture: diagnostics
+         "DM_DD_HERO_PANEL",         // an optional overlay of its own, independent of the input mode
          "DM_RUMBLE",                // off unless a controller or a phone is meant to vibrate
          "DM_TOUCH_HAPTICS",         // a detail of the overlay, not of the game
          "DM_RIGHT_STICK_VISIBLE":   // an overlay detail (disabled while the gamepad is not the mode)
