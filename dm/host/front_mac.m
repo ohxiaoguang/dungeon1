@@ -210,29 +210,14 @@ static void pads_start(void) {
     dm_hero_snapshot_take(&s);
     int n = _enemySide ? s.enemy_buff_count : s.buff_count;
     const dd_hero_buff_t *list = _enemySide ? s.enemy_buffs : s.buffs;
-    NSFont *titleFont = [NSFont monospacedSystemFontOfSize:9 weight:NSFontWeightBold];
     NSFont *nameFont = [NSFont systemFontOfSize:10];
     NSFont *valueFont = [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightSemibold];
 
-    NSRect box = NSInsetRect(self.bounds, 8, 6);
+    NSRect box = NSInsetRect(self.bounds, 8, 5);
     CGFloat x0 = NSMinX(box), right = NSMaxX(box);
     CGFloat y = NSMinY(box);
-    NSString *title = _enemySide ? @"ENEMY" : @"HERO";
-    [title drawAtPoint:NSMakePoint(x0, y) withAttributes:@{NSFontAttributeName: titleFont,
-        NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:0.55]}];
-    y += 14;
-    if (!_enemySide) {   // who we are looking at, straight from the game's Actor
-        NSString *who = s.name[0] ? [NSString stringWithUTF8String:s.name] : nil;
-        if (s.class_name[0]) {
-            NSString *cls = [NSString stringWithUTF8String:s.class_name];
-            who = who ? [NSString stringWithFormat:@"%@\u2002%@", who, cls] : cls;
-        }
-        if (who.length) {
-            [who drawAtPoint:NSMakePoint(x0, y) withAttributes:@{NSFontAttributeName: nameFont,
-                NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:0.92]}];
-            y += 14;
-        }
-        if (s.has_stress && s.has_battle) {   // the bar values, as the game holds them
+    if (!_enemySide) {   // the bar values, as the game holds them
+        if (s.has_stress && s.has_battle) {
             NSString *bars = s.has_hp
                 ? [NSString stringWithFormat:@"生命 %d\u2002压力 %d/%d", s.hp, s.stress, s.stress_max]
                 : [NSString stringWithFormat:@"压力 %d/%d", s.stress, s.stress_max];
@@ -251,8 +236,27 @@ static void pads_start(void) {
         NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.55 green:0.86 blue:1 alpha:1]};
     NSDictionary *valueAttrWarm = @{NSFontAttributeName: valueFont,
         NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1 green:0.62 blue:0.45 alpha:1]};
-    int shown = n > 8 ? 8 : n;
+    NSDictionary *valueAttrAffliction = @{NSFontAttributeName: valueFont,
+        NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1 green:0.42 blue:0.55 alpha:1]};
     CGFloat rowH = 14;
+    // Special states first, each from its own game structure: the overstress
+    // state (the game's own name) and the block status (the game's own tooltip
+    // line, e.g. "剩余1次护体隔挡"). A hero can only ever be afflicted or
+    // virtuous, so one row covers both.
+    if (!_enemySide) {
+        NSString *affliction = s.affliction_line[0]
+            ? [NSString stringWithUTF8String:s.affliction_line] : nil;
+        if (affliction.length) {
+            [affliction drawAtPoint:NSMakePoint(x0, y) withAttributes:valueAttrAffliction];
+            y += rowH + 2;
+        }
+        NSString *block = s.block_line[0] ? [NSString stringWithUTF8String:s.block_line] : nil;
+        if (block.length) {
+            [block drawAtPoint:NSMakePoint(x0, y) withAttributes:valueAttrBlue];
+            y += rowH + 2;
+        }
+    }
+    int shown = n > 4 ? 4 : n;   // the compact panel above the lineup fits 4 rows
     for (int i = 0; i < shown; i++) {
         const dd_hero_buff_t *b = &list[i];
         // The row IS the game's own line; the only thing added here is colour,
@@ -311,11 +315,13 @@ static void pads_start(void) {
 - (void)layoutHeroPanels {
     if (!_heroLeft) return;
     NSRect pic = [self pictureRect];
-    CGFloat pw = MIN(230, MAX(150, pic.size.width * 0.26));
-    CGFloat ph = MIN(210, pic.size.height * 0.44);
-    CGFloat py = pic.origin.y + pic.size.height * 0.32;   // same visual band as the iOS panel (top 24%)
-    _heroLeft.frame = NSMakeRect(pic.origin.x + 8, py, pw, ph);
-    _heroRight.frame = NSMakeRect(pic.origin.x + pic.size.width - pw - 8, py, pw, ph);
+    // The panel hovers directly ABOVE the hero lineup: the models stand at
+    // x ≈ 0.14-0.55 with their heads at y ≈ 0.13, so the panel spans the
+    // picture's top strip (x 0.05-0.45) and ends just above the heads.
+    CGFloat pw = MIN(480, MAX(220, pic.size.width * 0.38));
+    CGFloat ph = MIN(120, pic.size.height * 0.145);
+    _heroLeft.frame = NSMakeRect(pic.origin.x + pic.size.width * 0.05, pic.origin.y + pic.size.height - ph - 4, pw, ph);
+    _heroRight.frame = NSMakeRect(pic.origin.x + pic.size.width - pw - pic.size.width * 0.05, pic.origin.y + pic.size.height - ph - 4, pw, ph);
 }
 - (BOOL)pointerPosition:(NSEvent *)e x:(float *)x y:(float *)y {
     NSPoint point = e ? e.locationInWindow : self.window.mouseLocationOutsideOfEventStream;

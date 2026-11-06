@@ -85,16 +85,8 @@ static UILabel *front_ios_fps_label(void);
     int n = _enemySide ? s.enemy_buff_count : s.buff_count;
     const dd_hero_buff_t *list = _enemySide ? s.enemy_buffs : s.buffs;
     NSMutableAttributedString *a = [[NSMutableAttributedString alloc] init];
-    UIFont *titleFont = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightBold];
-    NSString *title = _enemySide ? @"ENEMY\n" : @"HERO\n";
-    [a appendAttributedString:[[NSAttributedString alloc]
-        initWithString:title attributes:@{NSFontAttributeName: titleFont,
-        NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.55]}]];
     if (!_enemySide) {
         NSMutableString *head = [NSMutableString string];
-        if (s.name[0]) [head appendFormat:@"%s", s.name];
-        if (s.class_name[0]) [head appendFormat:@"\u2002%s", s.class_name];
-        if (head.length) [head appendString:@"\n"];
         if (s.has_stress && s.has_battle) {
             if (s.has_hp) [head appendFormat:@"生命 %d\u2002压力 %d/%d\n", s.hp, s.stress, s.stress_max];
             else [head appendFormat:@"压力 %d/%d\n", s.stress, s.stress_max];
@@ -103,7 +95,21 @@ static UILabel *front_ios_fps_label(void);
             initWithString:head attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
             NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.9]}]];
     }
-    int shown = n > 7 ? 7 : n;
+    int shown = n > 4 ? 4 : n;   // the compact panel above the lineup fits 4 rows
+    // Special states first, each from its own game structure: the overstress
+    // state (the game's own name) and the block status (the game's own tooltip
+    // line, e.g. "剩余1次护体隔挡"). A hero can only ever be afflicted or
+    // virtuous, so one row covers both.
+    if (!_enemySide) {
+        if (s.affliction_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[NSString stringWithFormat:@"%s\n", s.affliction_line]
+            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
+            NSForegroundColorAttributeName: [UIColor colorWithRed:1 green:0.42 blue:0.55 alpha:1]}]];
+        if (s.block_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[NSString stringWithFormat:@"%s\n", s.block_line]
+            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
+            NSForegroundColorAttributeName: [UIColor colorWithRed:0.55 green:0.86 blue:1 alpha:1]}]];
+    }
     for (int i = 0; i < shown; i++) {
         const dd_hero_buff_t *b = &list[i];
         // The row IS the game's own line; the only thing added here is colour,
@@ -197,13 +203,13 @@ static void launcher_done(void) { [g_root startGame]; }
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
     }
-    if (self.heroLeft) {   // left band of the picture; the right band mirrors it for the selected enemy
+    if (self.heroLeft) {   // the panel hovers directly ABOVE the hero lineup (heads at y ≈ 0.13); the right panel mirrors it for the selected enemy
         CGRect g = self.game.frame;
-        CGFloat pw = MIN(230, MAX(150, g.size.width * 0.26));
-        CGFloat ph = MIN(210, g.size.height * 0.44);
-        CGFloat py = g.origin.y + g.size.height * 0.24;
-        self.heroLeft.frame = CGRectMake(g.origin.x + 8, py, pw, ph);
-        self.heroRight.frame = CGRectMake(g.origin.x + g.size.width - pw - 8, py, pw, ph);
+        CGFloat pw = MIN(480, MAX(220, g.size.width * 0.38));
+        CGFloat ph = MIN(120, g.size.height * 0.145);
+        CGFloat py = g.origin.y + 4;
+        self.heroLeft.frame = CGRectMake(g.origin.x + g.size.width * 0.05, py, pw, ph);
+        self.heroRight.frame = CGRectMake(g.origin.x + g.size.width - pw - g.size.width * 0.05, py, pw, ph);
     }
 }
 - (void)viewDidAppear:(BOOL)a {

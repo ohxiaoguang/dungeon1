@@ -35,6 +35,7 @@
 //   +0x54 / +0x58 — the values the live dumps confirmed.
 #include "hle.h"
 #include "dm.h"
+#include "front.h"
 #include "dd_hero.h"
 #include <TargetConditionals.h>
 #include <pthread.h>
@@ -54,6 +55,20 @@
 #define DD_HERO_ELEM_STEP   0x1d8ull
 #define DD_HERO_SAMPLE_EVERY 6          // ~10 Hz at 60 fps; keeps the gate cheap
 
+// The player's own look path: tapping a hero portrait opens the game's
+// CharacterDisplay sheet, which holds the hero it is showing at +0x120 (the
+// field the touch policy's dd_live validates). The skill-grid renderer's
+// shared wrapper (drawn while the sheet is open) reaches the same panel
+// through its action's +8. Both are observed read-only; nothing is injected.
+#define DD_FMT              0x993000ull // the game's own printf-style formatter
+#define DD_PANEL_VT         0x11946c0ull // CharacterDisplay
+#define DD_PANEL_HERO       0x120ull     // the hero the sheet is showing
+#define DD_WRAPPER_VT       0x11956b8ull // __func<ShowSkillGrid::$_0, void()>
+#define DD_SKILL_VT         0x1195228ull // the combat grid's action class
+#define DD_CAMP_VT          0x11955b8ull // the camping grid's action class
+#define DD_BLOCK_COUNT      0x128cull    // remaining block uses (tray case 0x16, main+0xcd4cbc)
+#define DD_BLOCK_ARG        0x11a4ull    // the case's other formatter argument
+
 // Hero identity and bars, on the same Actor (verified by differential
 // observation on two heroes with different values, 2026-11-05):
 #define DD_HERO_NAME        0x8ull      // localized hero name, C string
@@ -62,6 +77,7 @@
 #define DD_HERO_STRESS_MAX  0xab8ull    // float stress cap (200)
 #define DD_HERO_GROUP       0x5cull     // element word: 1 = combat effect, 5 = quirk
 #define DD_HERO_CLASS_KEY   "heroClass" // property-bag key -> length-prefixed class id
+#define DD_AFFLICTION_KEY   "affliction_type_id" // property-bag key -> overstress id string
 
 // The original chain, as main-image offsets (see the audit, rounds 6 and 9):
 #define DD_ORC_AGGREGATE    0xdeba10ull // aggregate + de-dup the instance list
@@ -164,11 +180,154 @@ static void hero_publish(const dd_hero_snapshot_t *built) {
     pthread_mutex_unlock(&g_hero_lock);
 }
 
-typedef void *(*dd_loc_fn)(const char *key);
-typedef void (*dd_aggregate_fn)(void *out_vec, void **inst_begin, void **inst_end,
+typedef void *(*dd_aggregate_fn)(void *out_vec, void **inst_begin, void **inst_end,
                                 void *actor);
 typedef void (*dd_line_fn)(char *out_0x100, void *row, void *actor, uint32_t w3);
 typedef void (*dd_free_fn)(void *p, uint64_t bytes);
+
+// The game's localization lookup returns the text pointer in x0 and a packed
+// length/flags word in x1; a 16-byte struct return maps both registers (AAPCS).
+typedef struct { void *ptr; uint64_t packed; } dd_loc_ret;
+typedef dd_loc_ret (*dd_loc_fn)(const char *key);
+// 0x993000: the game's printf-style formatter. x0 is the 16-byte text
+// descriptor the game builds from the lookup result ({ptr, w1, (x1>>32)&0xff},
+// exactly the stores at main+0xcd4ce0..0xcd4cec), x1 the 0x100 output buffer,
+// w2 the capacity, then the integer arguments in w3, w4, ...
+typedef struct { void *ptr; uint32_t w1; uint32_t w8; } dd_fmt_desc;
+typedef void (*dd_fmt_fn)(const dd_fmt_desc *d, char *out, uint32_t cap,
+                          uint32_t a3, uint32_t a4);
+
+// ---- The player's own look target --------------------------------------
+// Tapping a hero portrait opens the game's CharacterDisplay sheet; the sheet
+// holds the hero it shows at +0x120. While the sheet is open its skill grid
+// draws through the shared wrapper (the touch policy's OBS 24 site), and when
+// it closes the panel-close gates fire (OBS 26/27) with the panel in x0. Both
+// paths end here and pin that hero as the panel's inspection target — the
+// look object stays fixed until the player picks another hero or the target
+// dies / the raid ends. Read-only throughout: no input is injected, no game
+// memory written, and the acting hero at G+0x3e8 is never used as the pin.
+static _Atomic uint64_t g_inspect_actor;   // the pinned look target; 0 = none yet
+static _Atomic uint64_t g_inspect_vt;      // its vtable at pin time (anti page-reuse)
+
+static int hero_module(uintptr_t *base, uint64_t *size) {
+    for (int i = 0; i < g_nmod; i++) {
+        module_t *m = &g_mod[i];
+        if (!strcmp(m->name, "main") && !strcmp(m->build_id, DD_HERO_MAIN_BUILD)) {
+            if (m->size <= DD_ORC_LINE_FULL + 0x400) return 0;
+            *base = (uintptr_t)m->base;
+            *size = m->size;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// The acceptance the tick applies to the fallback actor too: the vtable lives
+// in the main image and the object still carries its localized name. The
+// vtable is returned so the pin can require it to stay identical — a freed
+// and reused object would not keep it.
+static int hero_actor_plausible(uintptr_t base, uint64_t size, uint64_t actor,
+                                uint64_t *vt_out) {
+    uint64_t vt = 0;
+    if (!hero_rd(actor, &vt, 8) || vt < base || vt >= base + size) return 0;
+    char nm[16];
+    if (!hero_rd(actor + DD_HERO_NAME, nm, sizeof nm) || !nm[0]) return 0;
+    if (vt_out) *vt_out = vt;
+    return 1;
+}
+
+static void hero_pin_inspect(uintptr_t base, uint64_t size, uint64_t hero) {
+    uint64_t vt = 0;
+    if (!hero || !hero_actor_plausible(base, size, hero, &vt)) return;
+    atomic_store_explicit(&g_inspect_vt, vt, memory_order_relaxed);
+    uint64_t prev = atomic_exchange_explicit(&g_inspect_actor, hero,
+                                             memory_order_acq_rel);
+    if (prev != hero)
+        LOG("hero panel: inspection target pinned (actor %#llx%s)",
+            (unsigned long long)hero, prev ? ", player re-selected" : "");
+}
+
+// ---- Player-tap-gated selection follow ----------------------------------
+// Tapping a hero's portrait makes the game expand that hero's card — the
+// game's selected-hero slot (G+0x3e8) changes to them, whether or not the
+// character sheet opens. The panel follows that player-driven change and
+// never the automatic one at a turn boundary: the new value is pinned only
+// while a short window after a touch lift is open, and only if the slot
+// changed since the lift (turn switches carry no tap of their own).
+static struct { uint64_t gen, down_ns; int x, y, live; } g_tap_prev;
+static uint64_t g_tap_lift_ns, g_tap_baseline, g_sel_last;
+static uintptr_t g_base_cache;
+static uint64_t g_size_cache;
+static int g_tap_armed;
+#define DD_TAP_WINDOW_NS 800000000ull   // the window after a touch lift
+#define DD_TAP_MAX_NS    500000000ull   // a shorter contact is a Tap
+
+static void hero_tap_track(void) {
+    dm_contact_snapshot s;
+    dm_touch_contact_snapshot(&s);
+    uint64_t now = dm_touch_now_ns();
+    if (s.generation != g_tap_prev.gen) {   // the previous contact just ended
+        if (g_tap_prev.live && g_tap_prev.down_ns &&
+            now - g_tap_prev.down_ns < DD_TAP_MAX_NS) {
+            g_tap_lift_ns = now;
+            g_tap_baseline = g_sel_last;    // the selection as it was before the tap
+            g_tap_armed = 1;
+        }
+        g_tap_prev.gen = s.generation;
+        g_tap_prev.live = s.count > 0;
+        g_tap_prev.down_ns = s.down_ns;
+        g_tap_prev.x = s.x; g_tap_prev.y = s.y;
+    } else if (s.count > 0) {               // the live contact's latest position
+        g_tap_prev.x = s.x; g_tap_prev.y = s.y;
+    }
+}
+
+
+void dd_hero_note_character_panel(uint64_t panel) {
+    uintptr_t base; uint64_t size;
+    if (!dm_hero_panel_enabled() || !panel || !hero_module(&base, &size)) return;
+    uint64_t vt = 0;
+    if (!hero_rd(panel, &vt, 8) || vt != base + DD_PANEL_VT) return;
+    uint64_t hero = 0;
+    if (!hero_rd(panel + DD_PANEL_HERO, &hero, 8)) return;
+    hero_pin_inspect(base, size, hero);
+}
+
+void dd_hero_note_skill_wrapper(uint64_t callable) {
+    uintptr_t base; uint64_t size;
+    if (!dm_hero_panel_enabled() || !callable || !hero_module(&base, &size)) return;
+    uint64_t vt = 0;
+    if (!hero_rd(callable, &vt, 8) || vt != base + DD_WRAPPER_VT) return;
+    uint64_t action = 0;
+    if (!hero_rd(callable + 0x40, &action, 8) || !action) return;
+    if (!hero_rd(action, &vt, 8) ||
+        (vt != base + DD_SKILL_VT && vt != base + DD_CAMP_VT)) return;
+    uint64_t panel = 0;
+    if (!hero_rd(action + 8, &panel, 8) || !panel) return;
+    if (!hero_rd(panel, &vt, 8) || vt != base + DD_PANEL_VT) return;
+    uint64_t hero = 0;
+    if (!hero_rd(panel + DD_PANEL_HERO, &hero, 8)) return;
+    hero_pin_inspect(base, size, hero);
+}
+
+// Strips the game's colour protocol (<c> + 6-byte colour code + </c>; the
+// game's own renderer interprets it, our UI draws plain text).
+static void hero_strip(char *dst, size_t cap, const char *line) {
+    size_t k = 0;
+    for (size_t t = 0; line[t] && t < 0x100; ) {
+        if (line[t] == '<' && t + 9 <= 0x100 && line[t + 1] == 'c' && line[t + 2] == '>') {
+            t += 9;
+            continue;
+        }
+        if (line[t] == '<' && t + 4 <= 0x100 && !memcmp(line + t, "</c>", 4)) {
+            t += 4;
+            continue;
+        }
+        if (k + 1 >= cap) break;
+        dst[k++] = line[t++];
+    }
+    dst[k] = 0;
+}
 
 // One sample of the original chain. Everything below runs on the game thread
 // with the game's own objects; no guest pointer outlives the call.
@@ -328,23 +487,9 @@ static void hero_original_lines(uintptr_t base, uint64_t actor,
         memset(line, 0, sizeof line);
         line_full(line, row, (void *)(uintptr_t)actor, w5 & 1);
         if (dbg) LOG("hero panel: raw[%zu] = \"%s\"", i, line);
-        // Strip the game's colour protocol (<c> + 6-byte colour code + </c>;
-        // the game's own renderer interprets it, our UI draws plain text).
+        // Strip the game's colour protocol (hero_strip above).
         dd_hero_buff_t *out = &s->buffs[s->buff_count];
-        size_t k = 0;
-        for (size_t t = 0; t < 0x100 && line[t]; ) {
-            if (line[t] == '<' && t + 9 <= 0x100 && line[t + 1] == 'c' && line[t + 2] == '>') {
-                t += 9;
-                continue;
-            }
-            if (line[t] == '<' && t + 4 <= 0x100 && !memcmp(line + t, "</c>", 4)) {
-                t += 4;
-                continue;
-            }
-            if (k + 1 >= sizeof out->line) break;
-            out->line[k++] = line[t++];
-        }
-        out->line[k] = 0;
+        hero_strip(out->line, sizeof out->line, line);
         if (!out->line[0]) continue;         // the game wrote an empty line
         // DoT rows (bleed / poison / ...) arrive with an embedded nested key
         // ("[<buff_stat_tooltip_hp_dot_bleed>](2回合)"): their name key is
@@ -361,7 +506,7 @@ static void hero_original_lines(uintptr_t base, uint64_t actor,
                 stat_name[31] = 0;
                 const char *tkey = hero_tray_format_key(stat_name);
                 if (tkey && lookup_ok) {
-                    const char *tmpl = (const char *)lookup(tkey);
+                    const char *tmpl = (const char *)lookup(tkey).ptr;
                     if (tmpl && hero_page_ok((uintptr_t)tmpl)) {
                         float amount;
                         memcpy(&amount, (uint8_t *)row + 0x48, sizeof amount);
@@ -378,7 +523,6 @@ static void hero_original_lines(uintptr_t base, uint64_t actor,
                             hero_fmt_two(out->line, sizeof out->line, tmpl2,
                                          (int)(amount + (amount >= 0 ? 0.5f : -0.5f)),
                                          turns);
-                            k = strlen(out->line);
                         }
                     }
                 }
@@ -424,13 +568,121 @@ static void hero_original_lines(uintptr_t base, uint64_t actor,
 //   +0x80 / +0x1274 / +0xab8   current HP, current stress, stress cap (floats;
 //                   verified against the on-screen bars of three heroes with
 //                   different values)
-//   property bag    "heroClass" -> length-prefixed class id. The bag position
-//                   drifts between instances, so the (name -> class) pair is
-//                   cached per hero. The localized class name comes from the
-//                   game's own lookup with the key shape the game itself uses
-//                   at roster load. The max HP is not stored in the Actor at
-//                   all (the game computes it from the class config plus
-//                   modifiers), so the panel shows the current HP only.
+//   property bag    "heroClass" -> length-prefixed class id. Where the bag
+//                   nodes sit is session-dependent (see hero_bag_scan_tick);
+//                   the budgeted, name-anchored scan keeps them found. The
+//                   localized class name comes from the game's own lookup with
+//                   the key shape the game itself uses at roster load. The max
+//                   HP is not stored in the Actor at all (the game computes it
+//                   from the class config plus modifiers), so the panel shows
+//                   the current HP only.
+// The value after the key: the node padding varies between instances (a plain
+// u32 length on one hero, a stray byte first on another), so accept the first
+// identifier-shaped run and let the caller's whitelist decide.
+static void hero_bag_id(const uint8_t *buf, size_t cap, size_t key_len,
+                        char *out, size_t out_cap);
+
+// The anchor test: this hero's name string (as a property-bag VALUE — the
+// Actor's own +0x8 name field does not count) sits within 0x2000 bytes before
+// the node. This is what binds a bag node to its hero when the bags of
+// different heroes interleave in one allocator region.
+static int hero_bag_anchored(uint64_t actor, uint64_t node, const char *name,
+                             size_t nlen) {
+    uint64_t from = node > actor + 0x2000 ? node - 0x2000 : actor;
+    uint8_t chk[0x2008];
+    size_t cap = (size_t)(node - from) + 8;
+    if (cap > sizeof chk) cap = sizeof chk;
+    if (!hero_rd(from, chk, cap)) return 0;
+    for (size_t j = 0; j + nlen <= cap; j++) {
+        if (memcmp(chk + j, name, nlen) != 0) continue;
+        if (from + j == actor + DD_HERO_NAME) continue;   // the Actor's own field
+        return 1;
+    }
+    return 0;
+}
+
+// The property-bag record scan, budgeted and name-anchored. The bag nodes
+// drift with the session's allocator layout — observed +0x2835..+0x2954 from
+// the Actor in one session and beyond 0x40000 (a different vm region) in
+// another. Guards:
+//   - budget: at most 12 windows (≈28 KB) per tick, spread over frames — an
+//     earlier version scanned megabytes inside the frame a sheet opened and
+//     froze the game, and a second one ran the anchor test on EVERY byte
+//     offset (2 mincore syscalls each, thousands per window) which stalled
+//     every frame the scan was alive;
+//   - anchor: a node is only accepted when THIS hero's name string (as a bag
+//     value — not the Actor's own +0x8 field) sits within 0x2000 bytes before
+//     it, which is what binds a node to its hero;
+//   - gate: the scan runs only while the hero's stress can plausibly reach
+//     the overstress threshold (≥ 60) — at low stress there is nothing to
+//     find, so an unstressed party costs nothing.
+// The window grows across passes (0x20000, 0x40000, 0x80000). The scan fills
+// the affliction-node cache for the current hero.
+static struct {
+    char name[DD_HERO_STR_MAX];   // the hero the scan state belongs to
+    uint64_t aff_node;
+    uint64_t cursor;              // next window offset to scan (or retry stamp)
+    int pass;                     // 0..2 -> window 0x20000 << pass
+    int done;                     // the scan reached the window's end
+} g_bag;
+
+static void hero_bag_scan_restart(void) {
+    g_bag.cursor = 0;
+    g_bag.pass = 0;
+    g_bag.done = 0;
+}
+
+static void hero_bag_scan_tick(uint64_t actor, const char *name, int dbg) {
+    if (strcmp(name, g_bag.name) != 0) {   // a different hero: restart the state
+        snprintf(g_bag.name, sizeof g_bag.name, "%s", name);
+        g_bag.aff_node = 0;
+        hero_bag_scan_restart();
+    }
+    if (g_bag.done) {
+        // The node holds: nothing to look for. Otherwise re-sweep every 15 s —
+        // the game can materialize the bag later (opening the hero's own sheet
+        // is one such moment).
+        if (g_bag.aff_node || dm_touch_now_ns() < g_bag.cursor)
+            return;
+        hero_bag_scan_restart();
+        g_bag.cursor = dm_touch_now_ns() + 15000000000ull;
+        g_bag.done = 1;
+        return;
+    }
+    uint64_t extent = actor + (0x20000ull << g_bag.pass);
+    size_t nlen = strlen(name) + 1;
+    if (nlen > 16) nlen = 15;   // long names anchor by their first 15 bytes
+    int budget = 12;
+    while (budget-- > 0) {
+        if (g_bag.cursor + 0x900 > extent) {   // this pass is over
+            if (g_bag.pass < 2) { g_bag.pass++; g_bag.cursor = 0; }
+            else {
+                g_bag.done = 1;
+                g_bag.cursor = dm_touch_now_ns() + 15000000000ull;   // re-sweep stamp
+            }
+            return;
+        }
+        uint8_t win[0x900];
+        if (hero_rd(actor + g_bag.cursor, win, sizeof win)) {
+            for (size_t j = 0; j + 26 <= sizeof win; j++) {
+                // key bytes first, and only then the (costly) anchor test —
+                // the anchor on every byte offset was a per-frame stall
+                if (memcmp(win + j, DD_AFFLICTION_KEY,
+                           sizeof DD_AFFLICTION_KEY) != 0)
+                    continue;
+                uint64_t node = actor + g_bag.cursor + j;
+                if (!hero_bag_anchored(actor, node, name, nlen)) continue;
+                g_bag.aff_node = node;
+                if (dbg) LOG("hero panel: bag scan affliction node @ +0x%llx",
+                             (unsigned long long)(node - actor));
+                break;
+            }
+        }
+        g_bag.cursor += 0x700;
+        if (g_bag.aff_node) return;   // found: the sweep is done
+    }
+}
+
 static void hero_identity(uintptr_t base, uint64_t actor, int dbg, dd_hero_snapshot_t *s) {
     (void)base;
     char name[DD_HERO_STR_MAX];
@@ -450,97 +702,154 @@ static void hero_identity(uintptr_t base, uint64_t actor, int dbg, dd_hero_snaps
         s->stress_max = (int)(f + 0.5f);
     }
 
-    // The class id lives in the hero's property map (the hero's save record),
-    // whose nodes the allocator scatters AFTER this Actor at drifting offsets
-    // (+0x2d96 .. +0x75f2 observed). The scan is bounded by the next LIVE
-    // Actor (same vtable AND a name) so it never crosses into another hero,
-    // skips unmapped pages instead of stopping, and runs once per hero — the
-    // (name -> class) pair is cached, so known heroes cost nothing.
-    char class_id[DD_HERO_STR_MAX] = "";
-    static char cached_name[DD_HERO_STR_MAX], cached_class[DD_HERO_STR_MAX];
-    if (cached_class[0] && !strcmp(s->name, cached_name))
-        snprintf(class_id, sizeof class_id, "%s", cached_class);
-    if (!class_id[0] && s->name[0]) {
-        uint64_t extent = actor + 0x6000;   // conservative fallback
-        uint64_t vt = 0;
-        if (hero_rd(actor, &vt, 8) && vt) {
-            for (uint64_t a = actor + 0x1000; a < actor + 0x40000; a += 0x400) {
-                uint64_t v = 0;
-                if (!hero_rd(a, &v, 8)) continue;   // unmapped page: skip it
-                if (v != vt) continue;
-                char nm[16];                     // a LIVE actor carries its name
-                if (!hero_rd(a + DD_HERO_NAME, nm, sizeof nm) || !nm[0]) continue;
-                extent = a;
-                break;
-            }
-        }
-        for (uint64_t a = actor; a + 0x900 <= extent && !class_id[0]; a += 0x700) {
-            uint8_t buf[0x900];
-            if (!hero_rd(a, buf, sizeof buf)) continue;   // skip unmapped windows
-            for (size_t j = 0; j + 26 <= sizeof buf; j++) {
-                if (memcmp(buf + j, DD_HERO_CLASS_KEY, 10) != 0) continue;  // "heroClass\0"
-                // The value follows the key, but the node padding before it
-                // varies (a plain u32 length on one hero, a stray byte first
-                // on another). Skip the padding and accept the first
-                // identifier run that is a class id the game itself ships
-                // (romfs heroes/ directories).
-                static const char *const classes[] = {
-                    "abomination", "antiquarian", "arbalest", "bounty_hunter",
-                    "crusader", "grave_robber", "hellion", "highwayman",
-                    "houndmaster", "jester", "leper", "man_at_arms", "occultist",
-                    "plague_doctor", "vestal", "shieldbreaker", "flagellant",
-                    "musketeer", 0};
-                for (size_t t = j + 10; t + 4 <= j + 26 && t < sizeof buf; t++) {
-                    if (buf[t] < 'a' || buf[t] > 'z') continue;
-                    size_t e = t;
-                    while (e < sizeof buf && e - t < 24 &&
-                           ((buf[e] >= 'a' && buf[e] <= 'z') || buf[e] == '_'))
-                        e++;
-                    if (e - t < 3) { t = e; continue; }
-                    char cand[28];
-                    memcpy(cand, buf + t, e - t);
-                    cand[e - t] = 0;
-                    for (int ci = 0; classes[ci]; ci++) {
-                        if (!strcmp(cand, classes[ci])) {
-                            snprintf(class_id, sizeof class_id, "%s", cand);
-                            break;
-                        }
-                    }
-                    if (class_id[0]) break;
-                    t = e;
-                }
-                break;
-            }
-        }
-        if (class_id[0]) {
-            snprintf(cached_name, sizeof cached_name, "%s", s->name);
-            snprintf(cached_class, sizeof cached_class, "%s", class_id);
-        }
-    }
-    if (dbg) LOG("hero panel: hero=\"%s\" class_id=\"%s\" hp=%d stress=%d/%d",
-                 s->name, class_id, s->hp, s->stress, s->stress_max);
-    if (!class_id[0]) return;
-    snprintf(s->class_id, sizeof s->class_id, "%s", class_id);
+    // The overstress state's node lives in the hero's property map. Where
+    // those nodes sit is session-dependent — see hero_bag_scan_tick. The scan
+    // runs only while the stress can plausibly reach the threshold (≥ 60), so
+    // an unstressed party costs nothing; the name/class rows were removed by
+    // request, and with them the class scan and its per-sample lookup.
+    if (s->name[0] && s->has_stress && s->stress >= 60)
+        hero_bag_scan_tick(actor, s->name, dbg);
+}
 
-    // The localized class name comes from the game's own lookup with the
-    // game's own key shape "hero_class_name_<id>". The game itself looks this
-    // key up for every class while loading the roster (captured live), so the
-    // call always hits an existing entry — the earlier crash came from feeding
-    // the lookup garbage ids extracted from the wrong buffer, which took the
-    // missing-key path that is not safe to enter from outside the game.
-    dd_loc_fn lookup = (dd_loc_fn)(base + DD_ORC_LOOKUP);
-    if (!lookup) return;
-    char key[DD_HERO_STR_MAX];
-    snprintf(key, sizeof key, "hero_class_name_%s", class_id);
-    const char *r = (const char *)lookup(key);
-    if (r && hero_page_ok((uintptr_t)r)) {
-        char text[DD_HERO_STR_MAX];
-        size_t k = 0;
-        while (k + 1 < sizeof text && r[k]) { text[k] = r[k]; k++; }
-        text[k] = 0;
-        if (dbg) LOG("hero panel: class key \"%s\" -> \"%s\"", key, text);
-        if (text[0]) snprintf(s->class_name, sizeof s->class_name, "%s", text);
+// ---- Special states (read from their own structures, never the Buff chain) ----
+
+// (a) The block status: the tray's own case 0x16 (main+0xcd4cbc) replayed
+// read-only, both of its branches. The game gates on Actor+0x128c: while it
+// is >= 1 it formats tray_icon_tooltip_health_damage_blocks_duration_format
+// with (w3 = Actor+0x11a4, w4 = the count) — pool text "剩余%d次护体隔挡";
+// below that it formats tray_icon_tooltip_health_damage_blocks_format with
+// (w3 = Actor+0x11a4) — pool text "%d次护体隔挡". Live evidence: after the
+// Shieldbreaker's Puncture the witness read cnt(+0x128c)=0, arg(+0x11a4)=2,
+// so the else branch is the common one and the count lives in +0x11a4.
+static void hero_block_line(uintptr_t base, uint64_t actor, int dbg, dd_hero_snapshot_t *s) {
+    uint32_t cnt = 0, arg = 0;
+    if (!hero_rd(actor + DD_BLOCK_COUNT, &cnt, 4) ||
+        !hero_rd(actor + DD_BLOCK_ARG, &arg, 4))
+        return;
+    // Rate-limited field witness: one line per change (combat start/end, a
+    // block consumed or granted). This is what ties the two fields to the
+    // game's own block state without a debugger attached.
+    static uint32_t prev_cnt = 0xffffffffu, prev_arg;
+    static uint64_t prev_actor;
+    if (cnt != prev_cnt || arg != prev_arg || actor != prev_actor) {
+        prev_cnt = cnt; prev_arg = arg; prev_actor = actor;
+        LOG("hero panel: block fields cnt=%u arg=%u (actor %#llx)",
+            cnt, arg, (unsigned long long)actor);
     }
+    // The state exists while either field says so; garbage cannot pass.
+    int dur = cnt >= 1 && cnt <= 999;
+    if (!dur && (arg < 1 || arg > 999)) return;
+    dd_loc_fn lookup = (dd_loc_fn)(base + DD_ORC_LOOKUP);
+    dd_fmt_fn fmt = (dd_fmt_fn)(base + DD_FMT);
+    if (!lookup || !fmt) return;
+    dd_loc_ret r = dur
+        ? lookup("tray_icon_tooltip_health_damage_blocks_duration_format")
+        : lookup("tray_icon_tooltip_health_damage_blocks_format");
+    if (!r.ptr || !hero_page_ok((uintptr_t)r.ptr)) return;
+    dd_fmt_desc d = { r.ptr, (uint32_t)r.packed, (uint32_t)(r.packed >> 32) };
+    char line[0x100];
+    memset(line, 0, sizeof line);
+    if (dur) fmt(&d, line, 0x100, arg, cnt);
+    else fmt(&d, line, 0x100, arg, 0);   // the else branch passes no second integer
+    if (dbg) LOG("hero panel: block raw = \"%s\"", line);
+    hero_strip(s->block_line, sizeof s->block_line, line);
+}
+
+// (b) The overstress state. Afflictions (暴虐, 自私, ...) are not buffs: they
+// are the hero's property-bag string "affliction_type_id" (empty while the
+// hero is fine) — the same bag the class id comes from, with the same drifting
+// node placement. The Chinese name is the game's own lookup of
+// "str_affliction_name_<id>" / "str_virtue_name_<id>", the key shapes the game
+// itself composes (both verbatim in the main image). The id is validated
+// against the romfs trait library's own lists, so the lookup only ever sees
+// keys the game itself displays (a miss would enter the crash-prone fallback).
+// The found bag node address is cached per hero and re-verified cheaply each
+// sample: a state change shows up live, and a moved node costs one rescan.
+static const char *const hero_affliction_ids[] = {
+    "abusive", "depressed", "fearful", "irrational", "masochistic", "paranoid",
+    "selfish", 0};
+static const char *const hero_virtue_ids[] = {
+    "courageous", "focused", "powerful", "stalwart", "vigorous", 0};
+
+// The value after the key: the node padding varies between instances (a plain
+// u32 length on one hero, a stray byte first on another), so accept the first
+// identifier-shaped run and let the caller's whitelist decide.
+static void hero_bag_id(const uint8_t *buf, size_t cap, size_t key_len,
+                        char *out, size_t out_cap) {
+    out[0] = 0;
+    for (size_t t = key_len; t + 4 <= cap; t++) {
+        if (buf[t] < 'a' || buf[t] > 'z') continue;
+        size_t e = t;
+        while (e < cap && e - t < 24 &&
+               ((buf[e] >= 'a' && buf[e] <= 'z') || buf[e] == '_'))
+            e++;
+        if (e - t >= 3) {
+            size_t n = e - t < out_cap - 1 ? e - t : out_cap - 1;
+            memcpy(out, buf + t, n);
+            out[n] = 0;
+            return;
+        }
+        t = e;
+    }
+}
+
+static int hero_id_in(const char *const *list, const char *id) {
+    for (int i = 0; list[i]; i++)
+        if (!strcmp(list[i], id)) return 1;
+    return 0;
+}
+
+static void hero_affliction_line(uintptr_t base, uint64_t actor, int dbg, dd_hero_snapshot_t *s) {
+    (void)actor;
+    static char cached_id[32], cached_line[DD_HERO_STR_MAX];
+    const size_t key_len = sizeof DD_AFFLICTION_KEY;   // includes the NUL
+    uint8_t buf[0x40];
+    // The node address comes from the shared bag scan (g_bag.aff_node), bound
+    // to this hero by the name anchor; it is re-verified cheaply each sample,
+    // so a state change shows up live.
+    uint64_t node = !strcmp(s->name, g_bag.name) ? g_bag.aff_node : 0;
+    int node_ok = node &&
+        hero_rd(node, buf, sizeof buf) &&
+        !memcmp(buf, DD_AFFLICTION_KEY, key_len);
+    if (node && !node_ok) {   // the node moved or was freed: re-scan
+        g_bag.aff_node = 0;
+        hero_bag_scan_restart();
+    }
+    if (!node_ok) {
+        cached_id[0] = 0; cached_line[0] = 0;
+        return;
+    }
+    char id[32];
+    hero_bag_id(buf, sizeof buf, key_len, id, sizeof id);
+    if (strcmp(id, cached_id) == 0) {   // unchanged since the last sample
+        snprintf(s->affliction_line, sizeof s->affliction_line, "%s", cached_line);
+        return;
+    }
+    snprintf(cached_id, sizeof cached_id, "%s", id);
+    cached_line[0] = 0;
+    if (dbg) LOG("hero panel: affliction id = \"%s\"", id);
+    if (id[0]) {
+        const char *shape = NULL;
+        if (hero_id_in(hero_affliction_ids, id)) shape = "str_affliction_name_%s";
+        else if (hero_id_in(hero_virtue_ids, id)) shape = "str_virtue_name_%s";
+        if (shape) {
+            dd_loc_fn lookup = (dd_loc_fn)(base + DD_ORC_LOOKUP);
+            char key[64];
+            snprintf(key, sizeof key, shape, id);
+            if (lookup) {
+                const char *r = (const char *)lookup(key).ptr;
+                if (r && hero_page_ok((uintptr_t)r)) {
+                    char text[DD_HERO_STR_MAX];
+                    size_t k = 0;
+                    while (k + 1 < sizeof text && r[k]) { text[k] = r[k]; k++; }
+                    text[k] = 0;
+                    if (text[0]) snprintf(cached_line, sizeof cached_line, "%s", text);
+                }
+            }
+        }
+        // An id outside the game's own lists is never shown (never an internal id).
+    }
+    snprintf(s->affliction_line, sizeof s->affliction_line, "%s", cached_line);
 }
 
 void dd_hero_frame_tick(void) {
@@ -552,6 +861,26 @@ void dd_hero_frame_tick(void) {
         return;
     }
     g_hero_cleared_when_off = 0;
+
+    // Per frame, before the sample gate: the tap tracker must see every
+    // contact change (a fast tap can start and end between two samples), and
+    // the tap window must notice the selection change promptly. Both use the
+    // module base cached by the per-sample scan below; until the first scan
+    // succeeds there is nothing to track against.
+    if (g_base_cache) {
+        uint64_t s0 = 0, a0 = 0;
+        if (hero_rd(g_base_cache + DD_HERO_SINGLETON, &s0, 8) && s0)
+            hero_rd(s0 + DD_HERO_SINGLETON_ACTOR, &a0, 8);
+        g_sel_last = a0;
+        hero_tap_track();
+        if (g_tap_armed && dm_touch_now_ns() - g_tap_lift_ns > DD_TAP_WINDOW_NS)
+            g_tap_armed = 0;
+        if (g_tap_armed && g_sel_last && g_sel_last != g_tap_baseline) {
+            g_tap_armed = 0;   // the tap moved the game's own selection: follow it
+            hero_pin_inspect(g_base_cache, g_size_cache, g_sel_last);
+        }
+    }
+
     if (++g_hero_tick % DD_HERO_SAMPLE_EVERY) return;
 
     module_t *main_mod = NULL;
@@ -569,28 +898,54 @@ void dd_hero_frame_tick(void) {
     }
     uintptr_t base = (uintptr_t)main_mod->base;
     g_hero_base_log = base;
+    g_base_cache = base;
+    g_size_cache = main_mod->size;
 
-    uint64_t singleton = 0;
-    if (!hero_rd(base + DD_HERO_SINGLETON, &singleton, 8) || !singleton ||
-        singleton < base || singleton >= base + main_mod->size) {
-        hero_note("singleton unreadable");
-        hero_publish_invalid();
-        return;
+    // The look target: the Actor the player pinned by clicking a hero, else —
+    // before the first click — the acting hero, as before. The pin deliberately
+    // survives the game's own hero switching; it is dropped only when the
+    // Actor itself is gone (vtable/name) or the raid object behind it ended
+    // (leaving the dungeon or the combat scene).
+    uint64_t actor = atomic_load_explicit(&g_inspect_actor, memory_order_acquire);
+    if (actor) {
+        uint64_t vt = 0;
+        if (!hero_actor_plausible(base, main_mod->size, actor, &vt) ||
+            vt != atomic_load_explicit(&g_inspect_vt, memory_order_relaxed)) {
+            atomic_store_explicit(&g_inspect_actor, 0, memory_order_release);
+            actor = 0;
+            hero_note("inspection target destroyed");
+        } else {   // the scene check: the raid/combat object must still exist
+            void *(*has_raid)(void *) = NULL;
+            memcpy(&has_raid, (void *)(uintptr_t)(vt + 0x20), sizeof has_raid);
+            if (!has_raid || !has_raid((void *)(uintptr_t)actor)) {
+                atomic_store_explicit(&g_inspect_actor, 0, memory_order_release);
+                actor = 0;
+                hero_note("inspection target left the raid");
+            }
+        }
     }
-    uint64_t actor = 0;
-    if (!hero_rd(singleton + DD_HERO_SINGLETON_ACTOR, &actor, 8) || !actor) {
-        hero_note("selected actor null");
-        hero_publish_invalid();
-        return;
-    }
-    // An Actor's vtable must live inside this same main image. Town / title
-    // screens reuse the singleton slot for unrelated objects, which this
-    // rejects before the original chain is invoked.
-    uint64_t vt = 0;
-    if (!hero_rd(actor, &vt, 8) || !vt || vt < base || vt >= base + main_mod->size) {
-        hero_note("actor vtable outside main");
-        hero_publish_invalid();
-        return;
+    if (!actor) {
+        uint64_t singleton = 0;
+        if (!hero_rd(base + DD_HERO_SINGLETON, &singleton, 8) || !singleton ||
+            singleton < base || singleton >= base + main_mod->size) {
+            hero_note("singleton unreadable");
+            hero_publish_invalid();
+            return;
+        }
+        if (!hero_rd(singleton + DD_HERO_SINGLETON_ACTOR, &actor, 8) || !actor) {
+            hero_note("selected actor null");
+            hero_publish_invalid();
+            return;
+        }
+        // An Actor's vtable must live inside this same main image. Town / title
+        // screens reuse the singleton slot for unrelated objects, which this
+        // rejects before the original chain is invoked.
+        uint64_t vt = 0;
+        if (!hero_rd(actor, &vt, 8) || !vt || vt < base || vt >= base + main_mod->size) {
+            hero_note("actor vtable outside main");
+            hero_publish_invalid();
+            return;
+        }
     }
     uint64_t begin = 0, end = 0;
     if (!hero_rd(actor + DD_HERO_VEC_BEGIN, &begin, 8) ||
@@ -608,6 +963,8 @@ void dd_hero_frame_tick(void) {
     int dbg = g_hero_dbg < hero_dbg_limit();
     hero_identity(base, actor, dbg, &s);
     if (begin != end) hero_original_lines(base, actor, begin, end, &s);
+    hero_block_line(base, actor, dbg, &s);
+    hero_affliction_line(base, actor, dbg, &s);
 
     {   // Which Actor did the tooltip builder describe this frame?
         uint64_t ga = atomic_load_explicit(&g_gate_actor, memory_order_relaxed);

@@ -77,6 +77,10 @@
 // definition in hle_dd_hero.c wins in the real host. It runs before dd_ready():
 // the panel has its own switch and must work independently of the touch policy.
 __attribute__((weak)) void dd_hero_frame_tick(void) {}
+// The inspection-target capture (the player's own look path): the panel's own
+// switch gates these inside hle_dd_hero.c, so they too run before dd_ready().
+__attribute__((weak)) void dd_hero_note_character_panel(uint64_t panel) { (void)panel; }
+__attribute__((weak)) void dd_hero_note_skill_wrapper(uint64_t callable) { (void)callable; }
 
 #define DD_HOLD_NS 500000000ull   // 0.5 s: the same threshold the recognizer's Press uses
 #define DD_WRAPPER 0xe39fe0u      // ShowSkillGrid::$_0::operator()(), vtable 0x11956b8 +0x30
@@ -679,6 +683,7 @@ static void dd_frame_tick(const uint64_t *r) {
     pthread_mutex_unlock(&dd_mu);
 }
 static void dd_panel_gone(const uint64_t *r) {
+    dd_hero_note_character_panel(r[0]);   // the sheet's hero, before it goes away
     if (!dd_ready()) return;
     pthread_mutex_lock(&dd_mu);
     if (dd_hover_state.panel == r[0]) memset(&dd_hover_state, 0, sizeof dd_hover_state);
@@ -686,6 +691,11 @@ static void dd_panel_gone(const uint64_t *r) {
     pthread_mutex_unlock(&dd_mu);
 }
 static void dd_skill_after(const uint64_t *r) {
+    // The hero panel's look target: while the character sheet is open its skill
+    // grid draws through this site, and the wrapper reaches the sheet's current
+    // hero. Read-only and independent of the touch policy (the panel's own
+    // switch gates it); runs before the iOS-only hover logic below.
+    dd_hero_note_skill_wrapper(r[20]);
     // Hover observation: identifies the skill control the pointer is on, for the
     // cursor handoff only. r[0] is the return of the grid's layout call (a 48-bit
     // object pointer, never a hit flag); it is used exactly as before.

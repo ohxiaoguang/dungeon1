@@ -28,6 +28,10 @@ typedef struct {
     int has_battle;               // the game says a raid/combat object exists
     int has_hp, hp;               // current HP
     int has_stress, stress, stress_max;
+    // Special states, each read from its own game structure (never through the
+    // Buff filters). Empty string = the state is not present.
+    char affliction_line[DD_HERO_STR_MAX]; // the overstress state's own name, e.g. "暴虐"
+    char block_line[DD_HERO_LINE_MAX];     // the game's own block tooltip, e.g. "剩余1次护体隔挡"
     int buff_count;
     dd_hero_buff_t buffs[DD_HERO_MAX_BUFFS];
     // Enemy side (right of the picture). Reserved: the selected-enemy pointer is
@@ -43,5 +47,13 @@ void dm_hero_snapshot_take(dd_hero_snapshot_t *out);
 int dm_hero_panel_enabled(void);
 // Called once per game frame from the existing OBS_DD_TOUCH_FRAME gate.
 void dd_hero_frame_tick(void);
+// Inspection target capture (the player's own click path, read-only): the
+// game's CharacterDisplay sheet — opened by tapping a hero portrait — holds
+// the hero it is showing at +0x120. The touch policy's gates hand us the panel
+// (on close) and the skill-grid wrapper (while it draws); both pin that hero
+// as the panel's look target until the target dies or the raid ends. No input
+// is injected and nothing in the game is written.
+void dd_hero_note_character_panel(uint64_t panel);
+void dd_hero_note_skill_wrapper(uint64_t callable);
 
 #endif
