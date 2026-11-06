@@ -64,6 +64,18 @@ OBS = {
         # Read-only: the gate replays the original prologue. The hero status panel
         # uses it to learn which unit the game is describing for that frame.
         (0xcd3d10, 35, '6db63bef', 'observe the Actor passed to the buff icon tooltip builder'),
+        # The sprite animator draw (0xccf0a0) is entered once per unit per frame
+        # from the raid scene's draw loop with x0 = Actor+0x94 and the unit's
+        # position in the scene's own 2048-unit space in s0/s1 — the same
+        # position the unit's HUD is placed from — and with w3 = 7, while the
+        # HUD's animated icons enter the same function with w3 = 1 (measured:
+        # those carry an icon x and y = 0). The hero status panel derives the
+        # unit's place on the picture and its click box from this position every
+        # frame, so neither the anchor nor the tap test is a fixed screen
+        # coordinate and both follow a walk or an attack. Read-only: the gate
+        # replays the original prologue, and the host only reads registers
+        # (q0/q1 included).
+        (0xccf0a0, 36, '6db833ed', 'observe a unit sprite being drawn: x0 = Actor+0x94, s0/s1 = its world position (w3 = 7)'),
     ],
 }
 

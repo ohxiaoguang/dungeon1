@@ -108,7 +108,7 @@ static int hero_page_ok(uint64_t a) {
 static uint64_t g_hero_base_log;
 
 static int hero_rd(uint64_t a, void *out, size_t n) {
-    if (a < 0x1000 || !n || a + n < a) return 0;
+    if (a < 0x10000 || !n || a + n < a) return 0;
     if (!hero_page_ok(a) || !hero_page_ok(a + n - 1)) {
         static int once;
         if (!once) { once = 1; LOG("hero panel: page %#llx unmapped (base %#llx)", (unsigned long long)a, (unsigned long long)g_hero_base_log); }
@@ -124,12 +124,15 @@ static int hero_rd(uint64_t a, void *out, size_t n) {
 // prologue, and nothing here writes guest memory or registers.
 static _Atomic uint64_t g_gate_actor;
 
+static void hero_sprite_gate(const uint64_t *r);             // the unit position gates, below
+
 static void hero_actor_gate(const uint64_t *r) {
     atomic_store_explicit(&g_gate_actor, r[1], memory_order_relaxed);
 }
 
 __attribute__((constructor)) static void hero_gate_register(void) {
     gate_obs_set(OBS_DD_HERO_ACTOR, hero_actor_gate);
+    gate_obs_set(OBS_DD_HERO_SPRITE, hero_sprite_gate);
 }
 
 int dm_hero_panel_enabled(void) {
@@ -197,15 +200,203 @@ typedef struct { void *ptr; uint32_t w1; uint32_t w8; } dd_fmt_desc;
 typedef void (*dd_fmt_fn)(const dd_fmt_desc *d, char *out, uint32_t cap,
                           uint32_t a3, uint32_t a4);
 
-// ---- The player's own look target --------------------------------------
-// Tapping a hero portrait opens the game's CharacterDisplay sheet; the sheet
-// holds the hero it shows at +0x120. While the sheet is open its skill grid
-// draws through the shared wrapper (the touch policy's OBS 24 site), and when
-// it closes the panel-close gates fire (OBS 26/27) with the panel in x0. Both
-// paths end here and pin that hero as the panel's inspection target — the
-// look object stays fixed until the player picks another hero or the target
-// dies / the raid ends. Read-only throughout: no input is injected, no game
-// memory written, and the acting hero at G+0x3e8 is never used as the pin.
+// ---- Unit screen positions: the game's own sprite draw ------------------
+// OBS 36 sits at the sprite animator draw (main+0xccf0a0). The raid scene's
+// draw loop calls it once per unit per frame with
+//   x0      = Actor + 0x94 (the unit's sprite animator)
+//   s0, s1  = the unit's position on screen, in the game's own 1280x720 panel
+//             space (the space the touch panel coordinates use, front.h)
+//   w3      = the draw mode
+// So every drawn unit hands us a live, game-computed screen position each
+// frame — no hard-coded coordinates, no camera maths of our own, and it follows
+// walk / attack / death animations because it is re-read every frame.
+//
+// The array is written from the draw (guest thread, inside dm_gate) and read
+// from OBS 25's frame tick (the same guest thread, before the draw), so it
+// needs no lock; a stamp keeps a unit that stopped being drawn from being
+// mistaken for a current one.
+#define DD_ACTOR_ANIM 0x94ull      // the actor's sprite animator (the draw's x0)
+#define DD_SPRITE_MODE 7           // w3 of a unit's sprite draw (a HUD icon passes 1)
+#define DD_UI_W 1280.0f            // the game's panel space (hle_touch.c: x*1280, y*720)
+#define DD_UI_H 720.0f
+#define DD_UNIT_MAX 16
+#define DD_UNIT_STALE 4            // frames a position may be older than the tick
+
+typedef struct {
+    uint64_t actor;                // 0 = free
+    float x, y;                    // the sprite's world position, as the sprite draw got it
+    float sx, sy;                  // the unit's place on screen (its HUD layout origin)
+    int scr_ok;                    // sx/sy were read from the HUD layout
+    uint64_t stamp;                // g_unit_stamp when last drawn
+} dd_unit_pos;
+
+static dd_unit_pos g_units[DD_UNIT_MAX];
+static _Atomic uint64_t g_unit_stamp;   // one tick per frame (dd_hero_frame_tick)
+static _Atomic uint64_t g_hero_vt;      // a known hero Actor vtable (from the acting hero)
+
+// The unit positions the sprite draw hands us live in the game's own scene
+// space, 2048 units wide (a unit's x over 2048 is where it is across the
+// picture: three heroes measured at 0.218/0.300/0.379 for 446.7/614.2/776.5).
+// The sprite's y is its row: every unit of a row shares it, and y = 0 is the
+// floor line the party stands on. So the panel's anchor and the click box are
+// derived from the GAME's own position for that unit, every frame — they
+// follow a walk, an attack lunge and the camera without any screen constant.
+// The three fractions below are the view's own geometry (one sprite's height
+// and the floor line), re-read every second so a run can dial them in from the
+// DM_CTL console instead of rebuilding.
+#define DD_WORLD_W 2048.0f
+static float g_floor_y = 0.600f;      // the feet line, normalized over the picture
+static float g_sprite_h = 0.245f;     // one sprite's height, normalized
+static float g_body_half = 0.042f;    // half the click box width, normalized
+static float g_panel_gap = 6.0f;      // panel pixels above the head
+static int g_tune_frames;
+
+static float hero_env_f32(const char *name, float def) {
+    const char *v = getenv(name);
+    if (!v || !*v) return def;
+    float f = strtof(v, NULL);
+    return f == f ? f : def;
+}
+
+static void hero_tune_tick(void) {
+    if (g_tune_frames-- > 0) return;
+    g_tune_frames = 60;   // once a second: an env change during a run applies
+    g_floor_y = hero_env_f32("DM_DD_HERO_FLOOR_Y", g_floor_y);
+    g_sprite_h = hero_env_f32("DM_DD_HERO_SPRITE_H", g_sprite_h);
+    g_body_half = hero_env_f32("DM_DD_HERO_BODY_HALF", g_body_half);
+    g_panel_gap = hero_env_f32("DM_DD_HERO_PANEL_GAP", g_panel_gap);
+}
+
+// The unit's place on the picture, normalized: its column, and the feet line of
+// its row. Everything else (the head, the click box) follows from these.
+static void hero_unit_norm(float wx, float wy, float *nx, float *ny) {
+    *nx = wx / DD_WORLD_W;
+    *ny = g_floor_y - wy / DD_WORLD_W;
+}
+
+// The unit's click box and the panel's anchor, normalized over the picture.
+static void hero_unit_box(float wx, float wy, float *x0, float *y0,
+                          float *x1, float *y1) {
+    float cx, feet;
+    hero_unit_norm(wx, wy, &cx, &feet);
+    *x0 = cx - g_body_half;
+    *x1 = cx + g_body_half;
+    *y0 = feet - g_sprite_h;
+    *y1 = feet;
+}
+
+static void hero_unit_put(uint64_t actor, float x, float y) {
+    if (!actor) return;
+    if (!(x == x) || !(y == y) || x < -4096 || x > 8192 || y < -4096 || y > 8192) return;
+    uint64_t stamp = atomic_load_explicit(&g_unit_stamp, memory_order_relaxed);
+    int free_i = -1, old_i = 0;
+    for (int i = 0; i < DD_UNIT_MAX; i++) {
+        if (g_units[i].actor == actor) {
+            if (stamp == g_units[i].stamp && g_units[i].x == x && g_units[i].y == y) return;
+            g_units[i].x = x; g_units[i].y = y; g_units[i].stamp = stamp;
+            return;
+        }
+        if (!g_units[i].actor && free_i < 0) free_i = i;
+        if (g_units[i].stamp < g_units[old_i].stamp) old_i = i;
+    }
+    int i = free_i >= 0 ? free_i : old_i;
+    g_units[i].actor = actor; g_units[i].x = x; g_units[i].y = y;
+    g_units[i].stamp = stamp;
+}
+
+// The unit's place on screen: what the game itself positions that unit's own
+// HUD from, read from its layout object every frame.
+static int hero_unit_screen(uint64_t actor, float *x, float *y) {
+    uint64_t stamp = atomic_load_explicit(&g_unit_stamp, memory_order_relaxed);
+    for (int i = 0; i < DD_UNIT_MAX; i++) {
+        if (g_units[i].actor != actor) continue;
+        if (!g_units[i].scr_ok || stamp - g_units[i].stamp > DD_UNIT_STALE) return 0;
+        if (x) *x = g_units[i].sx;
+        if (y) *y = g_units[i].sy;
+        return 1;
+    }
+    return 0;
+}
+
+static int hero_unit_at(uint64_t actor, float *x, float *y) {
+    uint64_t stamp = atomic_load_explicit(&g_unit_stamp, memory_order_relaxed);
+    for (int i = 0; i < DD_UNIT_MAX; i++) {
+        if (g_units[i].actor != actor) continue;
+        if (stamp - g_units[i].stamp > DD_UNIT_STALE) return 0;   // no longer drawn
+        if (x) *x = g_units[i].x;
+        if (y) *y = g_units[i].y;
+        return 1;
+    }
+    return 0;
+}
+
+// A unit that has not been drawn for a while (left the scene, died, the raid
+// ended) gives its slot back. The inspected target is NOT cleared here: the
+// tick's own checks decide that, so a single frame without a draw (a scene
+// transition) cannot drop a live target.
+static void hero_unit_prune(void) {
+    uint64_t stamp = atomic_load_explicit(&g_unit_stamp, memory_order_relaxed);
+    for (int i = 0; i < DD_UNIT_MAX; i++) {
+        if (g_units[i].actor && stamp - g_units[i].stamp > 30) {
+            memset(&g_units[i], 0, sizeof g_units[i]);
+        }
+    }
+}
+
+// q registers are saved contiguously from offset 256 (entry.S), so sN is the
+// float at 256 + 4*N.
+static float hero_gate_f32(const uint64_t *r, int n) {
+    float f;
+    memcpy(&f, (const uint8_t *)r + 256 + 4 * n, sizeof f);
+    return f;
+}
+
+static uintptr_t g_base_cache;   // main image, from the last sample scan
+static uint64_t g_size_cache;
+
+static int hero_units_log_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *v = getenv("DM_DD_HERO_UNITS"); on = v && atoi(v) != 0; }
+    return on;
+}
+
+static uint64_t g_sprite_calls, g_sprite_units;   // diagnostics: gate calls, units kept
+
+static void hero_sprite_gate(const uint64_t *r) {
+    if (!dm_hero_panel_enabled()) return;
+    g_sprite_calls++;
+    if ((int32_t)r[3] != DD_SPRITE_MODE) return;     // a HUD icon, not a unit
+    uint64_t anim = r[0];
+    if (!anim || (anim & 3)) return;   // Actor + 0x94: four-byte, not eight-byte, aligned
+    uint64_t actor = anim - DD_ACTOR_ANIM;
+    uintptr_t base = g_base_cache;                   // set by the first sample
+    if (!base) return;
+    uint64_t vt = 0;                                 // a unit's vtable lives in main
+    int ok = hero_rd(actor, &vt, 8) && vt >= base && vt < base + g_size_cache;
+    if (hero_units_log_on()) {
+        static int said;
+        if (!ok && said < 8) {
+            said++;
+            LOG("hero panel: sprite call anim %#llx actor %#llx vt %#llx (base %#llx) at %.1f,%.1f w3 %d x1 %#llx",
+                (unsigned long long)anim, (unsigned long long)actor, (unsigned long long)vt,
+                (unsigned long long)base, hero_gate_f32(r, 0), hero_gate_f32(r, 1),
+                (int32_t)r[3], (unsigned long long)r[1]);
+        }
+    }
+    if (!ok) return;
+    g_sprite_units++;
+    hero_unit_put(actor, hero_gate_f32(r, 0), hero_gate_f32(r, 1));
+}
+
+// ---- The inspected object ----------------------------------------------
+// The target is the unit the player last tapped on screen. The tap is the
+// host's own contact stream (the same finger the game's pointer receives; no
+// input is injected), and which unit it hit is decided by the game's own
+// per-unit screen positions (the sprite draw above) — never by fixed screen
+// coordinates and never by the acting hero or the automatic turn switch.
+// The game's CharacterDisplay sheet (opened by double-tapping a model) still
+// pins the hero it shows: that is the game's own look path and cannot disagree
+// with the tap test about which hero is being looked at.
 static _Atomic uint64_t g_inspect_actor;   // the pinned look target; 0 = none yet
 static _Atomic uint64_t g_inspect_vt;      // its vtable at pin time (anti page-reuse)
 
@@ -247,38 +438,99 @@ static void hero_pin_inspect(uintptr_t base, uint64_t size, uint64_t hero) {
             (unsigned long long)hero, prev ? ", player re-selected" : "");
 }
 
-// ---- Player-tap-gated selection follow ----------------------------------
-// Tapping a hero's portrait makes the game expand that hero's card — the
-// game's selected-hero slot (G+0x3e8) changes to them, whether or not the
-// character sheet opens. The panel follows that player-driven change and
-// never the automatic one at a turn boundary: the new value is pinned only
-// while a short window after a touch lift is open, and only if the slot
-// changed since the lift (turn switches carry no tap of their own).
-static struct { uint64_t gen, down_ns; int x, y, live; } g_tap_prev;
-static uint64_t g_tap_lift_ns, g_tap_baseline, g_sel_last;
-static uintptr_t g_base_cache;
-static uint64_t g_size_cache;
-static int g_tap_armed;
-#define DD_TAP_WINDOW_NS 800000000ull   // the window after a touch lift
-#define DD_TAP_MAX_NS    500000000ull   // a shorter contact is a Tap
+// ---- The tap that picks the inspected unit ------------------------------
+// A short contact that moved less than the tap threshold is a tap; the game
+// treats it exactly as it always did (nothing here is injected or withheld).
+// The point is the last position the contact reported, in the game's panel
+// space (dm_contact_snapshot holds x*1280 / y*720).
+static uint64_t g_tap_fired;               // the contact whose tap was already taken
+static float g_tap_x = -1, g_tap_y = -1;   // a tap waiting for the next tick
+static uint64_t g_tap_at;
+#define DD_TAP_MAX_NS 500000000ull   // a shorter contact is a Tap
+#define DD_TAP_MOVE   10             // panel pixels: beyond this it was a drag
 
+// The game's own contact snapshot keeps the released phase until the next
+// contact, so the tap is taken once per generation. A contact the host itself
+// cancelled (moved, second finger, taken by a controller) never reaches
+// DM_CONTACT_RELEASED, so a drag can never pick a unit.
 static void hero_tap_track(void) {
     dm_contact_snapshot s;
     dm_touch_contact_snapshot(&s);
+    if (s.count || s.phase != DM_CONTACT_RELEASED || !s.down_ns) return;
+    if (g_tap_fired == s.generation) return;
+    g_tap_fired = s.generation;
     uint64_t now = dm_touch_now_ns();
-    if (s.generation != g_tap_prev.gen) {   // the previous contact just ended
-        if (g_tap_prev.live && g_tap_prev.down_ns &&
-            now - g_tap_prev.down_ns < DD_TAP_MAX_NS) {
-            g_tap_lift_ns = now;
-            g_tap_baseline = g_sel_last;    // the selection as it was before the tap
-            g_tap_armed = 1;
-        }
-        g_tap_prev.gen = s.generation;
-        g_tap_prev.live = s.count > 0;
-        g_tap_prev.down_ns = s.down_ns;
-        g_tap_prev.x = s.x; g_tap_prev.y = s.y;
-    } else if (s.count > 0) {               // the live contact's latest position
-        g_tap_prev.x = s.x; g_tap_prev.y = s.y;
+    if (now - s.down_ns >= DD_TAP_MAX_NS) return;
+    if (abs(s.x - s.down_x) > DD_TAP_MOVE || abs(s.y - s.down_y) > DD_TAP_MOVE) return;
+    g_tap_x = (float)s.x;   // already the game's panel space (hle_touch.c)
+    g_tap_y = (float)s.y;
+    g_tap_at = now;
+}
+
+// Which unit did the tap land on? The smallest box wins, so a unit standing
+// behind another one (their boxes overlap in a corridor) is still reachable.
+// Only units of the hero class take part in phase 1: their vtable is the one
+// the game's own acting hero carries, which is game data, not a coordinate.
+static uint64_t hero_unit_hit(uintptr_t base, uint64_t size, float px, float py) {
+    uint64_t hero_vt = atomic_load_explicit(&g_hero_vt, memory_order_relaxed);
+    uint64_t hit = 0;
+    float best = 1e30f;
+    px /= 1280.0f;   // the contact snapshot is in the game's 1280x720 panel space
+    py /= 720.0f;
+    for (int i = 0; i < DD_UNIT_MAX; i++) {
+        uint64_t a = g_units[i].actor;
+        if (!a) continue;
+        uint64_t vt = 0;
+        if (!hero_rd(a, &vt, 8) || !vt) continue;
+        if (hero_vt && vt != hero_vt) continue;      // another class (an enemy)
+        uint64_t pvt = 0;
+        if (!hero_actor_plausible(base, size, a, &pvt)) continue;
+        float x0, y0, x1, y1;
+        hero_unit_box(g_units[i].x, g_units[i].y, &x0, &y0, &x1, &y1);
+        if (px < x0 || px > x1 || py < y0 || py > y1) continue;
+        float area = (x1 - x0) * (y1 - y0);
+        if (area < best) { best = area; hit = a; }
+    }
+    return hit;
+}
+
+// DM_DD_HERO_FALLBACK=1: show the acting hero before any tap. Diagnostics only;
+// the product rule is that the panel follows the player's last tap.
+static int hero_fallback_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *v = getenv("DM_DD_HERO_FALLBACK"); on = v && atoi(v) != 0; }
+    return on;
+}
+
+static int g_target_misses;   // samples in a row the target was not drawn
+
+// One line every few seconds with every drawn unit and where the game put it:
+// the measurement the anchor geometry is derived from (DM_DD_HERO_UNITS=1).
+static void hero_log_units(void) {
+    static int lines;
+    if (!hero_units_log_on() || lines >= 200) return;
+    static uint64_t last_ns;
+    uint64_t now = dm_touch_now_ns();
+    if (last_ns && now - last_ns < 3000000000ull) return;
+    int n = 0;
+    for (int i = 0; i < DD_UNIT_MAX; i++) if (g_units[i].actor) n++;
+    last_ns = now;
+    lines++;
+    LOG("hero panel: sprite calls %llu, unit draws %llu (table %d)",
+        (unsigned long long)g_sprite_calls, (unsigned long long)g_sprite_units, n);
+    if (!n) return;                     // nothing drawn: no unit lines
+    uint64_t target = atomic_load_explicit(&g_inspect_actor, memory_order_relaxed);
+    for (int i = 0; i < DD_UNIT_MAX; i++) {
+        if (!g_units[i].actor) continue;
+        char nm[24] = "";
+        hero_rd(g_units[i].actor + DD_HERO_NAME, nm, sizeof nm);
+        nm[sizeof nm - 1] = 0;
+        float bx0, by0, bx1, by1;
+        hero_unit_box(g_units[i].x, g_units[i].y, &bx0, &by0, &bx1, &by1);
+        LOG("hero panel: unit %#llx%s \"%s\" at %.1f,%.1f box %.0f,%.0f-%.0f,%.0f",
+            (unsigned long long)g_units[i].actor,
+            g_units[i].actor == target ? " (target)" : "",
+            nm, g_units[i].x, g_units[i].y, bx0, by0, bx1, by1);
     }
 }
 
@@ -683,6 +935,18 @@ static void hero_bag_scan_tick(uint64_t actor, const char *name, int dbg) {
     }
 }
 
+// "This unit has a raid/combat object" — the game's own question (the vtable
+// slot the tooltip chain calls at main+0xcd7458). It decides whether the panel
+// shows the health and stress rows, so it is asked for every unit, not only for
+// one that happens to carry an effect.
+static int hero_has_battle(uint64_t actor) {
+    uint64_t vt = 0;
+    if (!hero_rd(actor, &vt, 8) || !vt) return 0;
+    void *(*has_raid)(void *) = NULL;
+    memcpy(&has_raid, (void *)(uintptr_t)(vt + 0x20), sizeof has_raid);
+    return has_raid && has_raid((void *)(uintptr_t)actor) != 0;
+}
+
 static void hero_identity(uintptr_t base, uint64_t actor, int dbg, dd_hero_snapshot_t *s) {
     (void)base;
     char name[DD_HERO_STR_MAX];
@@ -701,6 +965,7 @@ static void hero_identity(uintptr_t base, uint64_t actor, int dbg, dd_hero_snaps
     if (hero_rd(actor + DD_HERO_STRESS_MAX, &f, 4) && f == f && f > 0 && f < 1e5f) {
         s->stress_max = (int)(f + 0.5f);
     }
+    s->has_battle = hero_has_battle(actor);
 
     // The overstress state's node lives in the hero's property map. Where
     // those nodes sit is session-dependent — see hero_bag_scan_tick. The scan
@@ -862,23 +1127,34 @@ void dd_hero_frame_tick(void) {
     }
     g_hero_cleared_when_off = 0;
 
-    // Per frame, before the sample gate: the tap tracker must see every
-    // contact change (a fast tap can start and end between two samples), and
-    // the tap window must notice the selection change promptly. Both use the
-    // module base cached by the per-sample scan below; until the first scan
-    // succeeds there is nothing to track against.
+    // Per frame, before the sample gate: the unit positions need a frame stamp
+    // (so a unit that stopped being drawn is not mistaken for a current one),
+    // and a tap must be resolved on the frame it happens, not six frames later.
+    // Both use the module base cached by the per-sample scan below; until the
+    // first scan succeeds there is nothing to work with.
+    atomic_fetch_add_explicit(&g_unit_stamp, 1, memory_order_relaxed);
+    hero_tune_tick();
     if (g_base_cache) {
+        // Which class is a hero on this screen: the game's own acting hero. It
+        // is used as a CLASS fingerprint only — never as the inspected unit.
         uint64_t s0 = 0, a0 = 0;
-        if (hero_rd(g_base_cache + DD_HERO_SINGLETON, &s0, 8) && s0)
-            hero_rd(s0 + DD_HERO_SINGLETON_ACTOR, &a0, 8);
-        g_sel_last = a0;
-        hero_tap_track();
-        if (g_tap_armed && dm_touch_now_ns() - g_tap_lift_ns > DD_TAP_WINDOW_NS)
-            g_tap_armed = 0;
-        if (g_tap_armed && g_sel_last && g_sel_last != g_tap_baseline) {
-            g_tap_armed = 0;   // the tap moved the game's own selection: follow it
-            hero_pin_inspect(g_base_cache, g_size_cache, g_sel_last);
+        if (hero_rd(g_base_cache + DD_HERO_SINGLETON, &s0, 8) && s0 &&
+            hero_rd(s0 + DD_HERO_SINGLETON_ACTOR, &a0, 8) && a0) {
+            uint64_t vt = 0;
+            if (hero_rd(a0, &vt, 8) && vt >= g_base_cache &&
+                vt < g_base_cache + g_size_cache)
+                atomic_store_explicit(&g_hero_vt, vt, memory_order_relaxed);
         }
+        hero_tap_track();
+        if (g_tap_x >= 0) {
+            float tx = g_tap_x, ty = g_tap_y;
+            g_tap_x = -1;   // one shot: a tap resolves against this frame's positions
+            uint64_t hit = hero_unit_hit(g_base_cache, g_size_cache, tx, ty);
+            if (hit) hero_pin_inspect(g_base_cache, g_size_cache, hit);
+            else if (hero_units_log_on())
+                LOG("hero panel: tap at %.0f,%.0f landed on no unit", tx, ty);
+        }
+        hero_unit_prune();
     }
 
     if (++g_hero_tick % DD_HERO_SAMPLE_EVERY) return;
@@ -900,12 +1176,13 @@ void dd_hero_frame_tick(void) {
     g_hero_base_log = base;
     g_base_cache = base;
     g_size_cache = main_mod->size;
+    hero_log_units();
 
-    // The look target: the Actor the player pinned by clicking a hero, else —
-    // before the first click — the acting hero, as before. The pin deliberately
-    // survives the game's own hero switching; it is dropped only when the
-    // Actor itself is gone (vtable/name) or the raid object behind it ended
-    // (leaving the dungeon or the combat scene).
+    // The inspected target: the hero the player last tapped (see the tap gate
+    // above), or nothing at all. The game's own acting hero is NOT a fallback —
+    // that is what made the panel follow the automatic turn switch; it is only
+    // used with DM_DD_HERO_FALLBACK=1, to anchor the panel during a diagnostic
+    // run that never taps.
     uint64_t actor = atomic_load_explicit(&g_inspect_actor, memory_order_acquire);
     if (actor) {
         uint64_t vt = 0;
@@ -924,22 +1201,33 @@ void dd_hero_frame_tick(void) {
             }
         }
     }
-    if (!actor) {
+    if (actor && !hero_unit_at(actor, NULL, NULL)) {
+        // Not drawn: the model left the scene. A scene transition can hide a
+        // unit for a moment, so only a sustained absence drops the target.
+        if (++g_target_misses > 20) {
+            atomic_store_explicit(&g_inspect_actor, 0, memory_order_release);
+            actor = 0;
+            g_target_misses = 0;
+            hero_note("inspection target is no longer drawn");
+        }
+    } else if (actor) {
+        g_target_misses = 0;
+    }
+    if (!actor && hero_fallback_on()) {
         uint64_t singleton = 0;
-        if (!hero_rd(base + DD_HERO_SINGLETON, &singleton, 8) || !singleton ||
-            singleton < base || singleton >= base + main_mod->size) {
-            hero_note("singleton unreadable");
-            hero_publish_invalid();
-            return;
-        }
-        if (!hero_rd(singleton + DD_HERO_SINGLETON_ACTOR, &actor, 8) || !actor) {
-            hero_note("selected actor null");
-            hero_publish_invalid();
-            return;
-        }
-        // An Actor's vtable must live inside this same main image. Town / title
-        // screens reuse the singleton slot for unrelated objects, which this
-        // rejects before the original chain is invoked.
+        if (hero_rd(base + DD_HERO_SINGLETON, &singleton, 8) && singleton &&
+            singleton >= base && singleton < base + main_mod->size)
+            hero_rd(singleton + DD_HERO_SINGLETON_ACTOR, &actor, 8);
+    }
+    if (!actor) {
+        hero_note("no inspection target yet");
+        hero_publish_invalid();
+        return;
+    }
+    // An Actor's vtable must live inside this same main image. Town / title
+    // screens reuse the singleton slot for unrelated objects, which this
+    // rejects before the original chain is invoked.
+    {
         uint64_t vt = 0;
         if (!hero_rd(actor, &vt, 8) || !vt || vt < base || vt >= base + main_mod->size) {
             hero_note("actor vtable outside main");
@@ -960,12 +1248,30 @@ void dd_hero_frame_tick(void) {
     dd_hero_snapshot_t s;
     memset(&s, 0, sizeof s);
     s.valid = 1;
+    s.target_type = DD_INSPECT_HERO;
+    s.target_actor = actor;
     int dbg = g_hero_dbg < hero_dbg_limit();
     hero_identity(base, actor, dbg, &s);
     if (begin != end) hero_original_lines(base, actor, begin, end, &s);
     hero_block_line(base, actor, dbg, &s);
     hero_affliction_line(base, actor, dbg, &s);
 
+    // Where the unit is this frame: the game's own position for it, turned into
+    // a picture-relative anchor and click box. Both numbers the front ends use
+    // come from here and from nowhere else.
+    float ux, uy;
+    if (hero_unit_at(actor, &ux, &uy)) {
+        float x0, y0, x1, y1;
+        hero_unit_box(ux, uy, &x0, &y0, &x1, &y1);
+        s.anchor_valid = 1;
+        s.anchor_x = (x0 + x1) * 0.5f;
+        s.anchor_y = y0 - g_panel_gap / DD_UI_H;
+        s.body_x0 = x0; s.body_y0 = y0; s.body_x1 = x1; s.body_y1 = y1;
+        if (s.anchor_x < 0) s.anchor_x = 0;
+        if (s.anchor_x > 1) s.anchor_x = 1;
+        if (s.anchor_y < 0) s.anchor_y = 0;
+        if (s.anchor_y > 1) s.anchor_y = 1;
+    }
     {   // Which Actor did the tooltip builder describe this frame?
         uint64_t ga = atomic_load_explicit(&g_gate_actor, memory_order_relaxed);
         static uint64_t last_gate;

@@ -43,20 +43,22 @@ static UILabel *front_ios_fps_label(void);
 @end
 
 // Hero status panel: a read-only overlay drawn from the host's snapshot
-// (dm_hero_snapshot_take). It never takes touch events - the gamepad layer
-// below keeps every tap - and hides itself whenever the snapshot is invalid, so
-// no stale or invented data is ever shown.
+// (dm_hero_snapshot_take). It is a floating box that hangs above the unit the
+// player last tapped, at the position the GAME reports for that unit on this
+// frame (snapshot anchor_x/anchor_y, normalized over the picture), so it
+// follows the unit while it walks or attacks. It never takes touch events - the
+// gamepad layer below keeps every tap - and hides itself whenever there is no
+// live inspected unit, so no stale or invented data is ever shown.
 @interface DmHeroPanel : UIView
 @property (nonatomic, strong) UILabel *body;
 @property (nonatomic, strong) NSTimer *timer;
-@property (nonatomic) BOOL enemySide;
-- (instancetype)initWithEnemySide:(BOOL)enemy;
+@property (nonatomic) CGRect pictureRect;   // the 16:9 picture, in the root view's coordinates
+- (void)follow;
 @end
 
 @implementation DmHeroPanel
-- (instancetype)initWithEnemySide:(BOOL)enemy {
-    if ((self = [super initWithFrame:CGRectZero])) {
-        _enemySide = enemy;
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
         self.userInteractionEnabled = NO;
         self.backgroundColor = [UIColor colorWithWhite:0 alpha:0.58];
         self.layer.cornerRadius = 7;
@@ -69,49 +71,49 @@ static UILabel *front_ios_fps_label(void);
         _body.userInteractionEnabled = NO;
         _body.textColor = UIColor.whiteColor;
         [self addSubview:_body];
+        self.hidden = YES;
         __weak DmHeroPanel *weak = self;
-        _timer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) {
-            (void)t; [weak refresh];
+        // 30 Hz: the anchor is re-read from the game every frame, and the panel
+        // must follow a moving unit.
+        _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 30.0 repeats:YES block:^(NSTimer *t) {
+            (void)t; [weak follow];
         }];
-        [self refresh];
     }
     return self;
 }
-- (void)refresh {
+- (instancetype)init { return [self initWithFrame:CGRectZero]; }
+- (void)follow {
     if (!dm_hero_panel_enabled()) { self.hidden = YES; return; }
     dd_hero_snapshot_t s;
     dm_hero_snapshot_take(&s);
-    if (_enemySide ? !s.enemy_valid : !s.valid) { self.hidden = YES; return; }
-    int n = _enemySide ? s.enemy_buff_count : s.buff_count;
-    const dd_hero_buff_t *list = _enemySide ? s.enemy_buffs : s.buffs;
+    if (!s.valid || s.target_type == DD_INSPECT_NONE || !s.anchor_valid) { self.hidden = YES; return; }
+    CGRect pic = _pictureRect;
+    if (pic.size.width <= 0 || pic.size.height <= 0) { self.hidden = YES; return; }
+    int n = s.buff_count;
     NSMutableAttributedString *a = [[NSMutableAttributedString alloc] init];
-    if (!_enemySide) {
+    if (s.has_stress && s.has_battle) {
         NSMutableString *head = [NSMutableString string];
-        if (s.has_stress && s.has_battle) {
-            if (s.has_hp) [head appendFormat:@"生命 %d\u2002压力 %d/%d\n", s.hp, s.stress, s.stress_max];
-            else [head appendFormat:@"压力 %d/%d\n", s.stress, s.stress_max];
-        }
-        if (head.length) [a appendAttributedString:[[NSAttributedString alloc]
-            initWithString:head attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
+        if (s.has_hp) [head appendFormat:@"生命 %d\u2002压力 %d/%d\n", s.hp, s.stress, s.stress_max];
+        else [head appendFormat:@"压力 %d/%d\n", s.stress, s.stress_max];
+        [a appendAttributedString:[[NSAttributedString alloc]
+            initWithString:head attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
             NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.9]}]];
     }
-    int shown = n > 4 ? 4 : n;   // the compact panel above the lineup fits 4 rows
     // Special states first, each from its own game structure: the overstress
     // state (the game's own name) and the block status (the game's own tooltip
     // line, e.g. "剩余1次护体隔挡"). A hero can only ever be afflicted or
     // virtuous, so one row covers both.
-    if (!_enemySide) {
-        if (s.affliction_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
-            initWithString:[NSString stringWithFormat:@"%s\n", s.affliction_line]
-            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
-            NSForegroundColorAttributeName: [UIColor colorWithRed:1 green:0.42 blue:0.55 alpha:1]}]];
-        if (s.block_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
-            initWithString:[NSString stringWithFormat:@"%s\n", s.block_line]
-            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
-            NSForegroundColorAttributeName: [UIColor colorWithRed:0.55 green:0.86 blue:1 alpha:1]}]];
-    }
+    if (s.affliction_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
+        initWithString:[NSString stringWithFormat:@"%s\n", s.affliction_line]
+        attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
+        NSForegroundColorAttributeName: [UIColor colorWithRed:1 green:0.42 blue:0.55 alpha:1]}]];
+    if (s.block_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
+        initWithString:[NSString stringWithFormat:@"%s\n", s.block_line]
+        attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
+        NSForegroundColorAttributeName: [UIColor colorWithRed:0.55 green:0.86 blue:1 alpha:1]}]];
+    int shown = n > 6 ? 6 : n;
     for (int i = 0; i < shown; i++) {
-        const dd_hero_buff_t *b = &list[i];
+        const dd_hero_buff_t *b = &s.buffs[i];
         // The row IS the game's own line; the only thing added here is colour,
         // taken from the sign the game itself printed.
         NSString *line = b->line[0] ? [NSString stringWithUTF8String:b->line] : nil;
@@ -121,21 +123,33 @@ static UILabel *front_ios_fps_label(void);
                                          : UIColor.whiteColor);
         [a appendAttributedString:[[NSAttributedString alloc]
             initWithString:[NSString stringWithFormat:@"%@\n", line]
-            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
+            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
             NSForegroundColorAttributeName: c}]];
     }
     if (n > shown) {
         [a appendAttributedString:[[NSAttributedString alloc]
             initWithString:[NSString stringWithFormat:@"+%d\n", n - shown]
-            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:9],
+            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
             NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.5]}]];
     }
-    if (n <= 0) {   // a verified unit with no active effects: say so, do not hide
+    if (a.length == 0 || n <= 0) {   // a verified unit with no active effects: say so, do not hide
         [a appendAttributedString:[[NSAttributedString alloc]
-            initWithString:@"—\n" attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
+            initWithString:@"—\n" attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
             NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.45]}]];
     }
     _body.attributedText = a;
+    // Hang the box above the unit's anchor, inside the picture, and give it the
+    // height its own rows need.
+    CGFloat maxW = MIN(pic.size.width * 0.42, 360);
+    CGSize need = [_body sizeThatFits:CGSizeMake(maxW, CGFLOAT_MAX)];
+    CGFloat w = MIN(maxW, ceil(need.width) + 16), h = ceil(need.height) + 12;
+    CGFloat ax = pic.origin.x + s.anchor_x * pic.size.width;
+    CGFloat ay = pic.origin.y + s.anchor_y * pic.size.height;
+    CGFloat x = MAX(pic.origin.x + 4, MIN(ax - w * 0.5f, CGRectGetMaxX(pic) - w - 4));
+    CGFloat y = ay - h - 4;                                  // above the anchor
+    if (y < pic.origin.y + 4) y = ay + 4;                    // no room: below it
+    y = MAX(pic.origin.y + 4, MIN(y, CGRectGetMaxY(pic) - h - 4));
+    self.frame = CGRectMake(floor(x), floor(y), ceil(w), ceil(h));
     self.hidden = NO;
 }
 - (void)layoutSubviews {
@@ -148,8 +162,7 @@ static UILabel *front_ios_fps_label(void);
 @property (nonatomic, strong) DmGameView *game;
 @property (nonatomic, strong) UIView *pad;
 @property (nonatomic, strong) UILabel *fps;
-@property (nonatomic, strong) DmHeroPanel *heroLeft;
-@property (nonatomic, strong) DmHeroPanel *heroRight;
+@property (nonatomic, strong) DmHeroPanel *heroPanel;
 @property (nonatomic) BOOL launched;
 - (void)startGame;
 @end
@@ -184,10 +197,8 @@ static void launcher_done(void) { [g_root startGame]; }
     self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
     if (self.fps) [self.view addSubview:self.fps];
     if (dm_hero_panel_enabled()) {   // optional: DM_DD_HERO_PANEL, its own switch, independent of the input mode
-        self.heroLeft = [[DmHeroPanel alloc] initWithEnemySide:NO];
-        self.heroRight = [[DmHeroPanel alloc] initWithEnemySide:YES];
-        [self.view addSubview:self.heroLeft];
-        [self.view addSubview:self.heroRight];
+        self.heroPanel = [[DmHeroPanel alloc] initWithFrame:CGRectZero];
+        [self.view addSubview:self.heroPanel];
     }
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     UIApplication.sharedApplication.idleTimerDisabled = YES;
@@ -203,13 +214,9 @@ static void launcher_done(void) { [g_root startGame]; }
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
     }
-    if (self.heroLeft) {   // the panel hovers directly ABOVE the hero lineup (heads at y ≈ 0.13); the right panel mirrors it for the selected enemy
-        CGRect g = self.game.frame;
-        CGFloat pw = MIN(480, MAX(220, g.size.width * 0.38));
-        CGFloat ph = MIN(120, g.size.height * 0.145);
-        CGFloat py = g.origin.y + 4;
-        self.heroLeft.frame = CGRectMake(g.origin.x + g.size.width * 0.05, py, pw, ph);
-        self.heroRight.frame = CGRectMake(g.origin.x + g.size.width - pw - g.size.width * 0.05, py, pw, ph);
+    if (self.heroPanel) {   // the panel hangs above the tapped unit; it only needs the picture it maps into
+        self.heroPanel.pictureRect = self.game.frame;
+        [self.heroPanel follow];
     }
 }
 - (void)viewDidAppear:(BOOL)a {

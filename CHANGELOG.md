@@ -272,3 +272,30 @@ Summary of what this round changed, in the order a player meets it:
 - The dungeon hero-status overlay is not implemented: dungeon selection, HP/stress fields
   and lifecycle transitions remain unverified. Record findings and blockers in
   `docs/darkest-dungeon-hero-status-audit.md`; do not display guessed or stale hero data.
+
+## Hero status panel: click a hero, panel above that hero — 2026-11-06
+
+- The panel is no longer a fixed strip at the picture edge: it is a floating box that
+  hangs above the unit the player last tapped, on macOS and iOS. It follows that unit
+  while it walks or attacks, keeps to the picture and drops to the other side of the
+  anchor when there is no room above it, and sizes itself to its own rows.
+- The inspected object is decided by the tap: the host's own contact stream (the finger
+  the game already receives, nothing injected) is hit-tested against the game's own
+  per-unit position, read once per unit per frame from the sprite animator draw
+  (new read-only OBS 36 at main+0xccf0a0, `w3 = 7`; the same call places the unit's
+  health bar). No fixed screen coordinates, no acting hero, no hover and no target.
+- The target is pinned until the player picks another unit, and is dropped when the
+  Actor is gone, the raid ends, or the unit stops being drawn. Turn order changes never
+  move it.
+- Fix: the health/stress row no longer depends on a unit carrying an effect; the combat
+  state is asked directly from the Actor's own vtable slot every sample.
+- Fix: the panel's rows are measured and drawn one line at a time (CoreText), so a row
+  that fits is never cut to "…".
+- The enemy side is reserved in the data model (`DdInspectTargetType`, target/anchor/box
+  fields in the snapshot) but not implemented; the panel, the anchor and the hit test are
+  already type-agnostic.
+- Validation: Host C tests and all script tests pass; iOS compile check 137 + 6 Swift
+  passes; macOS run in an isolated save with injected touches — three taps on three
+  heroes switched target and position correctly and a turn switch left it alone.
+  Artifacts: `out/macOS/Dungeon1-r33.app`, `out/iOS/Dungeon1-r33.ipa` (iOS is built and
+  statically checked, not run on a device). Not committed.
