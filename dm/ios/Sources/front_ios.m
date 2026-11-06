@@ -91,10 +91,17 @@ static UILabel *front_ios_fps_label(void);
     if (pic.size.width <= 0 || pic.size.height <= 0) { self.hidden = YES; return; }
     int n = s.buff_count;
     NSMutableAttributedString *a = [[NSMutableAttributedString alloc] init];
-    if (s.has_stress && s.has_battle) {
+    if (s.has_battle && (s.has_hp || s.has_stress)) {
         NSMutableString *head = [NSMutableString string];
-        if (s.has_hp) [head appendFormat:@"生命 %d\u2002压力 %d/%d\n", s.hp, s.stress, s.stress_max];
-        else [head appendFormat:@"压力 %d/%d\n", s.stress, s.stress_max];
+        if (s.has_hp) {
+            [head appendFormat:@"生命 %d", s.hp];
+            if (s.has_hp_max) [head appendFormat:@"/%d", s.hp_max];
+        }
+        if (s.has_stress) {
+            if (head.length) [head appendString:@"\u2002"];
+            [head appendFormat:@"压力 %d/%d", s.stress, s.stress_max];
+        }
+        [head appendString:@"\n"];
         [a appendAttributedString:[[NSAttributedString alloc]
             initWithString:head attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
             NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.9]}]];
@@ -103,6 +110,11 @@ static UILabel *front_ios_fps_label(void);
     // state (the game's own name) and the block status (the game's own tooltip
     // line, e.g. "剩余1次护体隔挡"). A hero can only ever be afflicted or
     // virtuous, so one row covers both.
+    const char *states[] = {s.deathsdoor_line, s.mark_line};
+    for (int i=0;i<2;i++) if (states[i][0])
+        [a appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"%s\n",states[i]]
+            attributes:@{NSFontAttributeName:[UIFont systemFontOfSize:11],
+            NSForegroundColorAttributeName:[UIColor colorWithRed:1 green:0.62 blue:0.45 alpha:1]}]];
     if (s.affliction_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
         initWithString:[NSString stringWithFormat:@"%s\n", s.affliction_line]
         attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
@@ -111,6 +123,10 @@ static UILabel *front_ios_fps_label(void);
         initWithString:[NSString stringWithFormat:@"%s\n", s.block_line]
         attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
         NSForegroundColorAttributeName: [UIColor colorWithRed:0.55 green:0.86 blue:1 alpha:1]}]];
+    if (s.deathblow_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
+        initWithString:[NSString stringWithFormat:@"%s\n", s.deathblow_line]
+        attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
+        NSForegroundColorAttributeName: [UIColor colorWithRed:1 green:0.62 blue:0.45 alpha:1]}]];
     int shown = n > 6 ? 6 : n;
     for (int i = 0; i < shown; i++) {
         const dd_hero_buff_t *b = &s.buffs[i];
@@ -132,7 +148,7 @@ static UILabel *front_ios_fps_label(void);
             attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
             NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.5]}]];
     }
-    if (a.length == 0 || n <= 0) {   // a verified unit with no active effects: say so, do not hide
+    if (a.length == 0 || (n <= 0 && !s.block_line[0] && !s.affliction_line[0] && !s.deathblow_line[0] && !s.deathsdoor_line[0] && !s.mark_line[0])) {   // a verified unit with no active effects: say so, do not hide
         [a appendAttributedString:[[NSAttributedString alloc]
             initWithString:@"—\n" attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
             NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.45]}]];

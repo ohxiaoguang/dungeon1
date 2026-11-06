@@ -299,3 +299,34 @@ Summary of what this round changed, in the order a player meets it:
   heroes switched target and position correctly and a turn switch left it alone.
   Artifacts: `out/macOS/Dungeon1-r33.app`, `out/iOS/Dungeon1-r33.ipa` (iOS is built and
   statically checked, not run on a device). Not committed.
+
+## Hero/enemy status panel fixes — 2026-11-06
+
+- Correct reversed tray admission branches and exclude quirk sources before stat
+  checks; preserve dedicated DoT rows, aggregate the full bounded instance list,
+  and derive effect colour from stat polarity.
+- Capture current/max HP from the game's health-bar renderer (new OBS 37), display
+  the maximum with the game's upward rounding, and fix the saved SIMD register stride.
+- Allow verified ordinary enemy Actors in the same click-to-view panel, with their
+  own lifetime accessor and no hero pressure fields. Mac long rows now wrap.
+- Bound the affliction scan correctly, restore timed retries and reset by Actor identity.
+- Validation: synthetic behavior/settings and script tests pass; iOS compile check
+  passes. Computer Use on an isolated macOS save confirms hero 10/18 and enemy13/13
+  against native details. Full host tests hit the existing real-audio stall timing
+  threshold (3000ms vs 2000–2600ms); not claimed fully passing. Boss/iOS-device/MOD
+  dynamic maximum changes and exhaustive special-state coverage remain unverified.
+
+## Character status panel corrections — 2026-11-07
+
+- Keep enemy health visible when effects are formatted; share native skeleton
+  bounds and raid-camera projection between floating-panel anchors and hit tests.
+- Include death's-door recovery, current death's door, mark duration and permanent
+  death-blow resistance loss as separate tray states.
+- Resolve affliction/virtue from native Actor hashes and the loaded trait table;
+  remove the nearby-memory scan and fixed name list that could lose the state.
+- Rename the launcher option to Character status panel and describe hero/enemy
+  inspection, maximum health and hero stress. Round fractional health upward.
+- Add synthetic collector/projection/trait/mark regression checks. Local Mac
+  validation covers ordinary unit clicks, camera/formation changes, recovery and
+  persistent affliction; specific mark/death's-door encounters and iOS touch
+  remain outside this runtime acceptance.

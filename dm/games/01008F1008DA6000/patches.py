@@ -64,18 +64,20 @@ OBS = {
         # Read-only: the gate replays the original prologue. The hero status panel
         # uses it to learn which unit the game is describing for that frame.
         (0xcd3d10, 35, '6db63bef', 'observe the Actor passed to the buff icon tooltip builder'),
-        # The sprite animator draw (0xccf0a0) is entered once per unit per frame
-        # from the raid scene's draw loop with x0 = Actor+0x94 and the unit's
-        # position in the scene's own 2048-unit space in s0/s1 — the same
-        # position the unit's HUD is placed from — and with w3 = 7, while the
-        # HUD's animated icons enter the same function with w3 = 1 (measured:
-        # those carry an icon x and y = 0). The hero status panel derives the
-        # unit's place on the picture and its click box from this position every
-        # frame, so neither the anchor nor the tap test is a fixed screen
-        # coordinate and both follow a walk or an attack. Read-only: the gate
-        # replays the original prologue, and the host only reads registers
-        # (q0/q1 included).
+        # Actor status/foot FX animator: observe unit presence only. Its scene
+        # position is not a screen-space body rectangle; OBS 38–42 below use
+        # the native camera and skeleton hit bounds for panel/tap geometry.
         (0xccf0a0, 36, '6db833ed', 'observe a unit sprite being drawn: x0 = Actor+0x94, s0/s1 = its world position (w3 = 7)'),
+        # Health/stress bar renderer: x1=Actor, w2=0 health / 1 stress,
+        # s2=current and s3=maximum, computed by the scene itself.
+        (0xccd7e0, 37, '6db63bef', 'observe the current and maximum values passed to the unit bar renderer'),
+        (0xd5f790, 38, '6db63bef', 'observe the raid camera used by native unit hit testing'),
+        # After the skeleton bounds getter; the game has materialized its cache.
+        (0xd639a8, 39, 'bd4a72a4', 'observe native unit hit bounds after the skeleton getter'),
+        (0xd63a8c, 39, 'bd4a72a4', 'observe native unit hit bounds after the skeleton getter'),
+        (0xd65420, 40, 'bd4a7284', 'observe native unit hit bounds after the skeleton getter'),
+        (0xd60b7c, 41, '2d400400', 'observe native unit hit bounds after the skeleton getter'),
+        (0xd60fb4, 42, '2d400400', 'observe native unit hit bounds after the skeleton getter'),
     ],
 }
 

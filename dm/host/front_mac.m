@@ -185,6 +185,7 @@ static void pads_start(void) {
 @end
 
 @interface DmHeroPanelView ()
+@property (nonatomic, strong) NSArray<NSNumber *> *rowHeights;
 @property (nonatomic, strong) NSArray<NSAttributedString *> *rows;   // the lines drawn, rebuilt by -follow
 @end
 
@@ -217,7 +218,7 @@ static const CGFloat kDdPanelPadX = 8, kDdPanelPadY = 6;
 // printed with a '-' in warm orange, a '+' effect in blue.
 static NSDictionary *dd_attr(CGFloat size, NSColor *colour) {
     NSMutableParagraphStyle *p = [[NSMutableParagraphStyle alloc] init];
-    p.lineBreakMode = NSLineBreakByTruncatingTail;
+    p.lineBreakMode = NSLineBreakByWordWrapping;
     p.lineSpacing = 0;
     return @{NSFontAttributeName: [NSFont systemFontOfSize:size],
              NSForegroundColorAttributeName: colour, NSParagraphStyleAttributeName: p};
@@ -226,16 +227,26 @@ static NSDictionary *dd_attr(CGFloat size, NSColor *colour) {
     NSMutableArray<NSAttributedString *> *a = [NSMutableArray array];
     NSDictionary *white = dd_attr(11, [NSColor colorWithWhite:1 alpha:0.92]);
     NSDictionary *dim = dd_attr(11, [NSColor colorWithWhite:1 alpha:0.5]);
-    if (s->has_stress && s->has_battle) {
-        NSString *bars = s->has_hp
-            ? [NSString stringWithFormat:@"生命 %d\u2002压力 %d/%d", s->hp, s->stress, s->stress_max]
-            : [NSString stringWithFormat:@"压力 %d/%d", s->stress, s->stress_max];
+    if (s->has_battle && (s->has_hp || s->has_stress)) {
+        NSMutableString *bars = [NSMutableString string];
+        if (s->has_hp) {
+            [bars appendFormat:@"生命 %d", s->hp];
+            if (s->has_hp_max) [bars appendFormat:@"/%d", s->hp_max];
+        }
+        if (s->has_stress) {
+            if (bars.length) [bars appendString:@"\u2002"];
+            [bars appendFormat:@"压力 %d/%d", s->stress, s->stress_max];
+        }
         [a addObject:[[NSAttributedString alloc] initWithString:bars
                 attributes:dd_attr(11, [NSColor colorWithWhite:1 alpha:0.85])]];
     }
     // Special states first, each from its own game structure: the overstress
     // state (the game's own name) and the block status (the game's own tooltip
     // line, e.g. "剩余1次护体隔挡").
+    const char *states[] = {s->deathsdoor_line, s->mark_line};
+    for (int i=0;i<2;i++) if (states[i][0])
+        [a addObject:[[NSAttributedString alloc] initWithString:[NSString stringWithUTF8String:states[i]]
+            attributes:dd_attr(11, [NSColor colorWithSRGBRed:1 green:0.62 blue:0.45 alpha:1])]];
     if (s->affliction_line[0])
         [a addObject:[[NSAttributedString alloc]
             initWithString:[NSString stringWithUTF8String:s->affliction_line]
@@ -244,6 +255,10 @@ static NSDictionary *dd_attr(CGFloat size, NSColor *colour) {
         [a addObject:[[NSAttributedString alloc]
             initWithString:[NSString stringWithUTF8String:s->block_line]
                 attributes:dd_attr(11, [NSColor colorWithSRGBRed:0.55 green:0.86 blue:1 alpha:1])]];
+    if (s->deathblow_line[0])
+        [a addObject:[[NSAttributedString alloc]
+            initWithString:[NSString stringWithUTF8String:s->deathblow_line]
+            attributes:dd_attr(11, [NSColor colorWithSRGBRed:1 green:0.62 blue:0.45 alpha:1])]];
     int n = s->buff_count, shown = n > 6 ? 6 : n;
     for (int i = 0; i < shown; i++) {
         const dd_hero_buff_t *b = &s->buffs[i];
@@ -257,7 +272,7 @@ static NSDictionary *dd_attr(CGFloat size, NSColor *colour) {
     if (n > shown)
         [a addObject:[[NSAttributedString alloc]
             initWithString:[NSString stringWithFormat:@"+%d", n - shown] attributes:dd_attr(10, dim[NSForegroundColorAttributeName])]];
-    if (a.count == 0 || n <= 0)   // a verified unit with no active effects: say so, do not hide
+    if (a.count == 0 || (n <= 0 && !s->block_line[0] && !s->affliction_line[0] && !s->deathblow_line[0] && !s->deathsdoor_line[0] && !s->mark_line[0]))   // a verified unit with no active effects: say so, do not hide
         [a addObject:[[NSAttributedString alloc] initWithString:@"—" attributes:dd_attr(11, dim[NSForegroundColorAttributeName])]];
     (void)maxW;
     return a;
@@ -288,7 +303,15 @@ static NSDictionary *dd_attr(CGFloat size, NSColor *colour) {
         CFRelease(ct);
     }
     CGFloat w = MIN(maxW, ceil(widest) + 2 * kDdPanelPadX + 4);
-    CGFloat h = MAX(1, (int)_rows.count) * lineH + 2 * kDdPanelPadY;
+    NSMutableArray<NSNumber *> *heights = [NSMutableArray array];
+    CGFloat h = 2 * kDdPanelPadY;
+    for (NSAttributedString *row in _rows) {
+        NSRect bounds = [row boundingRectWithSize:NSMakeSize(w - 2 * kDdPanelPadX, CGFLOAT_MAX)
+            options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading];
+        CGFloat rh = MAX(lineH, ceil(bounds.size.height));
+        [heights addObject:@(rh)]; h += rh;
+    }
+    _rowHeights = heights;
     // The anchor is normalized over the picture with y down; this view's
     // superview is not flipped, so it is turned around once here.
     CGFloat ax = pic.origin.x + s.anchor_x * pic.size.width;
@@ -309,10 +332,12 @@ static NSDictionary *dd_attr(CGFloat size, NSColor *colour) {
     // fact off a row that actually fits. The panel is exactly as wide as its
     // widest row, and the layer clips anything longer.
     CGFloat y = kDdPanelPadY;
-    for (NSAttributedString *row in _rows) {
-        [row drawAtPoint:NSMakePoint(kDdPanelPadX, y)];
-        y += ceil([NSFont systemFontOfSize:11].ascender - [NSFont systemFontOfSize:11].descender +
-                  [NSFont systemFontOfSize:11].leading);
+    for (NSUInteger i = 0; i < _rows.count; i++) {
+        CGFloat rh = _rowHeights[i].doubleValue;
+        [_rows[i] drawWithRect:NSMakeRect(kDdPanelPadX, y,
+            self.bounds.size.width - 2 * kDdPanelPadX, rh)
+            options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading];
+        y += rh;
     }
 }
 @end

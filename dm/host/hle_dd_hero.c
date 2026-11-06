@@ -42,6 +42,7 @@
 #include <sys/mman.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,8 +77,6 @@
 #define DD_HERO_STRESS      0x1274ull   // float current stress
 #define DD_HERO_STRESS_MAX  0xab8ull    // float stress cap (200)
 #define DD_HERO_GROUP       0x5cull     // element word: 1 = combat effect, 5 = quirk
-#define DD_HERO_CLASS_KEY   "heroClass" // property-bag key -> length-prefixed class id
-#define DD_AFFLICTION_KEY   "affliction_type_id" // property-bag key -> overstress id string
 
 // The original chain, as main-image offsets (see the audit, rounds 6 and 9):
 #define DD_ORC_AGGREGATE    0xdeba10ull // aggregate + de-dup the instance list
@@ -124,6 +123,12 @@ static int hero_rd(uint64_t a, void *out, size_t n) {
 // prologue, and nothing here writes guest memory or registers.
 static _Atomic uint64_t g_gate_actor;
 
+static void hero_bar_gate(const uint64_t *r);
+static void hero_bounds_gate(const uint64_t *r);
+static void hero_body_gate(const uint64_t *r);
+static void hero_body20_gate(const uint64_t *r);
+static void hero_body23_gate(const uint64_t *r);
+static void hero_body26_gate(const uint64_t *r);
 static void hero_sprite_gate(const uint64_t *r);             // the unit position gates, below
 
 static void hero_actor_gate(const uint64_t *r) {
@@ -131,6 +136,12 @@ static void hero_actor_gate(const uint64_t *r) {
 }
 
 __attribute__((constructor)) static void hero_gate_register(void) {
+    gate_obs_set(OBS_DD_HERO_BODY, hero_body_gate);
+    gate_obs_set(OBS_DD_HERO_BODY20, hero_body20_gate);
+    gate_obs_set(OBS_DD_HERO_BODY23, hero_body23_gate);
+    gate_obs_set(OBS_DD_HERO_BODY26, hero_body26_gate);
+    gate_obs_set(OBS_DD_HERO_BOUNDS, hero_bounds_gate);
+    gate_obs_set(OBS_DD_HERO_BAR, hero_bar_gate);
     gate_obs_set(OBS_DD_HERO_ACTOR, hero_actor_gate);
     gate_obs_set(OBS_DD_HERO_SPRITE, hero_sprite_gate);
 }
@@ -204,11 +215,10 @@ typedef void (*dd_fmt_fn)(const dd_fmt_desc *d, char *out, uint32_t cap,
 // OBS 36 sits at the sprite animator draw (main+0xccf0a0). The raid scene's
 // draw loop calls it once per unit per frame with
 //   x0      = Actor + 0x94 (the unit's sprite animator)
-//   s0, s1  = the unit's position on screen, in the game's own 1280x720 panel
-//             space (the space the touch panel coordinates use, front.h)
+//   s0, s1  = scene-space position (not normalized screen coordinates)
 //   w3      = the draw mode
 // So every drawn unit hands us a live, game-computed screen position each
-// frame — no hard-coded coordinates, no camera maths of our own, and it follows
+// frame; the queued draw observer below supplies size and projection, following
 // walk / attack / death animations because it is re-read every frame.
 //
 // The array is written from the draw (guest thread, inside dm_gate) and read
@@ -225,30 +235,17 @@ typedef void (*dd_fmt_fn)(const dd_fmt_desc *d, char *out, uint32_t cap,
 typedef struct {
     uint64_t actor;                // 0 = free
     float x, y;                    // the sprite's world position, as the sprite draw got it
-    float sx, sy;                  // the unit's place on screen (its HUD layout origin)
-    int scr_ok;                    // sx/sy were read from the HUD layout
+    float box[4];                  // projected bounds of this unit's actual image
+    uint64_t box_stamp;
     uint64_t stamp;                // g_unit_stamp when last drawn
 } dd_unit_pos;
 
 static dd_unit_pos g_units[DD_UNIT_MAX];
 static _Atomic uint64_t g_unit_stamp;   // one tick per frame (dd_hero_frame_tick)
-static _Atomic uint64_t g_hero_vt;      // a known hero Actor vtable (from the acting hero)
 
-// The unit positions the sprite draw hands us live in the game's own scene
-// space, 2048 units wide (a unit's x over 2048 is where it is across the
-// picture: three heroes measured at 0.218/0.300/0.379 for 446.7/614.2/776.5).
-// The sprite's y is its row: every unit of a row shares it, and y = 0 is the
-// floor line the party stands on. So the panel's anchor and the click box are
-// derived from the GAME's own position for that unit, every frame — they
-// follow a walk, an attack lunge and the camera without any screen constant.
-// The three fractions below are the view's own geometry (one sprite's height
-// and the floor line), re-read every second so a run can dial them in from the
-// DM_CTL console instead of rebuilding.
-#define DD_WORLD_W 2048.0f
-static float g_floor_y = 0.600f;      // the feet line, normalized over the picture
-static float g_sprite_h = 0.245f;     // one sprite's height, normalized
-static float g_body_half = 0.042f;    // half the click box width, normalized
-static float g_panel_gap = 6.0f;      // panel pixels above the head
+// Geometry comes from the queued image and its live projection, not a fixed
+// scene width or a shared guessed character size.
+static float g_panel_gap = 6.0f;
 static int g_tune_frames;
 
 static float hero_env_f32(const char *name, float def) {
@@ -261,28 +258,34 @@ static float hero_env_f32(const char *name, float def) {
 static void hero_tune_tick(void) {
     if (g_tune_frames-- > 0) return;
     g_tune_frames = 60;   // once a second: an env change during a run applies
-    g_floor_y = hero_env_f32("DM_DD_HERO_FLOOR_Y", g_floor_y);
-    g_sprite_h = hero_env_f32("DM_DD_HERO_SPRITE_H", g_sprite_h);
-    g_body_half = hero_env_f32("DM_DD_HERO_BODY_HALF", g_body_half);
     g_panel_gap = hero_env_f32("DM_DD_HERO_PANEL_GAP", g_panel_gap);
 }
 
-// The unit's place on the picture, normalized: its column, and the feet line of
-// its row. Everything else (the head, the click box) follows from these.
-static void hero_unit_norm(float wx, float wy, float *nx, float *ny) {
-    *nx = wx / DD_WORLD_W;
-    *ny = g_floor_y - wy / DD_WORLD_W;
-}
-
-// The unit's click box and the panel's anchor, normalized over the picture.
-static void hero_unit_box(float wx, float wy, float *x0, float *y0,
-                          float *x1, float *y1) {
-    float cx, feet;
-    hero_unit_norm(wx, wy, &cx, &feet);
-    *x0 = cx - g_body_half;
-    *x1 = cx + g_body_half;
-    *y0 = feet - g_sprite_h;
-    *y1 = feet;
+// Replay the native skeleton hit rectangle (d639a8/d63a8c), followed by
+// RaidDisplay's world-to-clip matrix and the inverse of its input conversion.
+// All units use their own cached skeleton bounds, facing and world position.
+static int hero_project_box(const float local[4], const float position[3], float facing,
+                            const float matrix[16], const float viewport[4],
+                            const float extent[2], float box[4]) {
+    if (!(local[1] > local[0] && local[3] > local[2] &&
+          extent[0] > 0 && extent[1] > 0 && viewport[2] > 0 && viewport[3] > 0)) return 0;
+    float left = local[0], right = local[1];
+    if (facing < 0) { left = local[1] * facing; right = local[0] * facing; }
+    box[0] = box[1] = 1e10f; box[2] = box[3] = -1e10f;
+    for (int i = 0; i < 4; i++) {
+        float v[4] = {position[0] + (i & 1 ? right : left),
+                      position[1] + local[i & 2 ? 3 : 2], position[2], 1};
+        float clip[4] = {0};
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 4; c++) clip[r] += matrix[c*4+r] * v[c];
+        if (!(clip[3] > 1e-6f)) return 0;
+        float x = (viewport[0] + (clip[0]/clip[3]+1)*0.5f*extent[0]*viewport[2]) / DD_UI_W;
+        float y = (viewport[1] + (1-clip[1]/clip[3])*0.5f*extent[1]*viewport[3]) / DD_UI_H;
+        if (!isfinite(x) || !isfinite(y) || fabsf(x) > 8 || fabsf(y) > 8) return 0;
+        box[0] = fminf(box[0], x); box[1] = fminf(box[1], y);
+        box[2] = fmaxf(box[2], x); box[3] = fmaxf(box[3], y);
+    }
+    return box[2] > box[0] && box[3] > box[1];
 }
 
 static void hero_unit_put(uint64_t actor, float x, float y) {
@@ -300,22 +303,36 @@ static void hero_unit_put(uint64_t actor, float x, float y) {
         if (g_units[i].stamp < g_units[old_i].stamp) old_i = i;
     }
     int i = free_i >= 0 ? free_i : old_i;
+    memset(&g_units[i], 0, sizeof g_units[i]);
     g_units[i].actor = actor; g_units[i].x = x; g_units[i].y = y;
     g_units[i].stamp = stamp;
 }
 
-// The unit's place on screen: what the game itself positions that unit's own
-// HUD from, read from its layout object every frame.
-static int hero_unit_screen(uint64_t actor, float *x, float *y) {
+static int hero_unit_bounds(uint64_t actor, float box[4]) {
     uint64_t stamp = atomic_load_explicit(&g_unit_stamp, memory_order_relaxed);
     for (int i = 0; i < DD_UNIT_MAX; i++) {
-        if (g_units[i].actor != actor) continue;
-        if (!g_units[i].scr_ok || stamp - g_units[i].stamp > DD_UNIT_STALE) return 0;
-        if (x) *x = g_units[i].sx;
-        if (y) *y = g_units[i].sy;
+        if (g_units[i].actor != actor || !g_units[i].box_stamp) continue;
+        if (stamp - g_units[i].stamp > DD_UNIT_STALE ||
+            stamp - g_units[i].box_stamp > DD_UNIT_STALE) return 0;
+        memcpy(box, g_units[i].box, sizeof g_units[i].box);
         return 1;
     }
     return 0;
+}
+
+static void hero_anchor(dd_hero_snapshot_t *s) {
+    float b[4];
+    s->anchor_valid = hero_unit_bounds(s->target_actor, b);
+    if (!s->anchor_valid) return;
+    s->anchor_x = (b[0] + b[2]) * 0.5f;
+    s->anchor_y = b[1] - g_panel_gap / DD_UI_H;
+    s->body_x0 = b[0]; s->body_y0 = b[1]; s->body_x1 = b[2]; s->body_y1 = b[3];
+}
+
+static void hero_follow_tick(void) {
+    pthread_mutex_lock(&g_hero_lock);
+    if (g_hero_snap.valid) hero_anchor(&g_hero_snap);
+    pthread_mutex_unlock(&g_hero_lock);
 }
 
 static int hero_unit_at(uint64_t actor, float *x, float *y) {
@@ -343,11 +360,11 @@ static void hero_unit_prune(void) {
     }
 }
 
-// q registers are saved contiguously from offset 256 (entry.S), so sN is the
-// float at 256 + 4*N.
+// q registers are saved contiguously from offset 256 (entry.S), so sN is the low
+// float of qN at 256 + 16*N.
 static float hero_gate_f32(const uint64_t *r, int n) {
     float f;
-    memcpy(&f, (const uint8_t *)r + 256 + 4 * n, sizeof f);
+    memcpy(&f, (const uint8_t *)r + 256 + 16 * n, sizeof f);
     return f;
 }
 
@@ -388,11 +405,85 @@ static void hero_sprite_gate(const uint64_t *r) {
     hero_unit_put(actor, hero_gate_f32(r, 0), hero_gate_f32(r, 1));
 }
 
+// Exact Actor subclasses observed in this build: hero and ordinary monster.
+// Do not accept an arbitrary object merely because its vtable is in main.
+static int hero_target_type(uintptr_t base, uint64_t actor) {
+    uint64_t vt = 0;
+    if (!hero_rd(actor, &vt, sizeof vt)) return DD_INSPECT_NONE;
+    if (vt == base + 0x116d538) return DD_INSPECT_HERO;
+    if (vt == base + 0x116f230) return DD_INSPECT_ENEMY;
+    return DD_INSPECT_NONE;
+}
+
+typedef struct { uint64_t actor, stamp; float hp, max; } dd_bar_sample;
+static dd_bar_sample g_bars[DD_UNIT_MAX];
+static void hero_bar_gate(const uint64_t *r) {
+    if (!dm_hero_panel_enabled() || !g_base_cache || (uint32_t)r[2] != 0) return;
+    uint64_t actor = r[1];
+    if (!hero_target_type(g_base_cache, actor)) return;
+    float hp = hero_gate_f32(r, 2), max = hero_gate_f32(r, 3);
+    if (!(hp >= 0 && hp < 1e5f && max > 0 && max < 1e5f)) return;
+    static int diag;
+    if (hero_units_log_on() && diag++ < 20)
+        LOG("hero panel: bar actor=%#llx xy=%.2f,%.2f hp=%.2f/%.2f",
+            (unsigned long long)actor, hero_gate_f32(r,0), hero_gate_f32(r,1), hp, max);
+    int slot = 0;
+    for (int i = 0; i < DD_UNIT_MAX; i++) {
+        if (g_bars[i].actor == actor) { slot = i; break; }
+        if (g_bars[i].stamp < g_bars[slot].stamp) slot = i;
+    }
+    g_bars[slot] = (dd_bar_sample){actor, atomic_load(&g_unit_stamp), hp, max};
+}
+
+// OBS 38: raid display overlay entry. +2d90 is the exact object whose
+// virtual +28 converts the native pointer to the skeleton's world plane.
+static uint64_t g_hero_camera, g_hero_camera_stamp;
+static void hero_bounds_gate(const uint64_t *r) {
+    if (!g_base_cache || !dm_hero_panel_enabled()) return;
+    uint64_t camera = 0, vt = 0;
+    if (!hero_rd(r[0]+0x2d90, &camera, 8) || !camera ||
+        !hero_rd(camera, &vt, 8) || vt != g_base_cache+0x11877b8) return;
+    g_hero_camera = camera;
+    g_hero_camera_stamp = atomic_load(&g_unit_stamp);
+    static int diagnostic;
+    if (hero_units_log_on() && diagnostic++ < 2) LOG("hero camera accepted %#llx", (unsigned long long)camera);
+}
+
+// OBS 39: after the native bounds getter has returned. Its cache is computed
+// by the game; the collector never calls the getter or changes game memory.
+static void hero_body_sample(const uint64_t *r, uint64_t actor) {
+    if (!g_hero_camera || !dm_hero_panel_enabled() ||
+        atomic_load(&g_unit_stamp)-g_hero_camera_stamp > 1) return;
+    if (!actor || !hero_target_type(g_base_cache, actor)) return;
+    float local[4], position[3], facing, matrix[16], viewport[4], extent[2], box[4];
+    if (!hero_rd(r[0],local,sizeof local) ||
+        !hero_rd(actor+0xa64,position,sizeof position) || !hero_rd(actor+0xa70,&facing,4) ||
+        !hero_rd(g_hero_camera+0x220,matrix,sizeof matrix) ||
+        !hero_rd(g_hero_camera+0x7f4,extent,sizeof extent) ||
+        !hero_rd(g_base_cache+0xb17e4060,viewport,sizeof viewport) ||
+        !hero_project_box(local,position,facing,matrix,viewport,extent,box)) return;
+    hero_unit_put(actor, position[0], position[1]);
+    for (int i = 0; i < DD_UNIT_MAX; i++) if (g_units[i].actor == actor) {
+        memcpy(g_units[i].box,box,sizeof box);
+        g_units[i].box_stamp = atomic_load(&g_unit_stamp);
+        break;
+    }
+    static int diag;
+    if (hero_units_log_on() && diag++ % 241 == 0 && diag < 3000)
+        LOG("hero body: actor=%#llx bounds %.4f %.4f %.4f %.4f camera %.0fx%.0f",
+            (unsigned long long)actor,box[0],box[1],box[2],box[3],extent[0],extent[1]);
+}
+
+static void hero_body_gate(const uint64_t *r) { hero_body_sample(r, r[21]); }
+static void hero_body20_gate(const uint64_t *r) { hero_body_sample(r, r[20]); }
+static void hero_body23_gate(const uint64_t *r) { hero_body_sample(r, r[23]); }
+static void hero_body26_gate(const uint64_t *r) { hero_body_sample(r, r[26]); }
+
 // ---- The inspected object ----------------------------------------------
 // The target is the unit the player last tapped on screen. The tap is the
 // host's own contact stream (the same finger the game's pointer receives; no
 // input is injected), and which unit it hit is decided by the game's own
-// per-unit screen positions (the sprite draw above) — never by fixed screen
+// projected native skeleton bounds — never by fixed screen
 // coordinates and never by the acting hero or the automatic turn switch.
 // The game's CharacterDisplay sheet (opened by double-tapping a model) still
 // pins the hero it shows: that is the game's own look path and cannot disagree
@@ -420,7 +511,8 @@ static int hero_module(uintptr_t *base, uint64_t *size) {
 static int hero_actor_plausible(uintptr_t base, uint64_t size, uint64_t actor,
                                 uint64_t *vt_out) {
     uint64_t vt = 0;
-    if (!hero_rd(actor, &vt, 8) || vt < base || vt >= base + size) return 0;
+    if (!hero_rd(actor, &vt, 8) || vt < base || vt >= base + size ||
+        !hero_target_type(base, actor)) return 0;
     char nm[16];
     if (!hero_rd(actor + DD_HERO_NAME, nm, sizeof nm) || !nm[0]) return 0;
     if (vt_out) *vt_out = vt;
@@ -472,7 +564,6 @@ static void hero_tap_track(void) {
 // Only units of the hero class take part in phase 1: their vtable is the one
 // the game's own acting hero carries, which is game data, not a coordinate.
 static uint64_t hero_unit_hit(uintptr_t base, uint64_t size, float px, float py) {
-    uint64_t hero_vt = atomic_load_explicit(&g_hero_vt, memory_order_relaxed);
     uint64_t hit = 0;
     float best = 1e30f;
     px /= 1280.0f;   // the contact snapshot is in the game's 1280x720 panel space
@@ -482,14 +573,16 @@ static uint64_t hero_unit_hit(uintptr_t base, uint64_t size, float px, float py)
         if (!a) continue;
         uint64_t vt = 0;
         if (!hero_rd(a, &vt, 8) || !vt) continue;
-        if (hero_vt && vt != hero_vt) continue;      // another class (an enemy)
+        if (!hero_unit_at(a, NULL, NULL)) continue; // stale draw is not a target
         uint64_t pvt = 0;
         if (!hero_actor_plausible(base, size, a, &pvt)) continue;
-        float x0, y0, x1, y1;
-        hero_unit_box(g_units[i].x, g_units[i].y, &x0, &y0, &x1, &y1);
+        float b[4];
+        if (!hero_unit_bounds(a, b)) continue;
+        float x0=b[0], y0=b[1], x1=b[2], y1=b[3];
         if (px < x0 || px > x1 || py < y0 || py > y1) continue;
-        float area = (x1 - x0) * (y1 - y0);
-        if (area < best) { best = area; hit = a; }
+        float dx = px - (x0+x1)*0.5f, dy = py - (y0+y1)*0.5f;
+        float distance = dx*dx + dy*dy;
+        if (distance < best) { best = distance; hit = a; }
     }
     return hit;
 }
@@ -502,6 +595,7 @@ static int hero_fallback_on(void) {
     return on;
 }
 
+static int hero_has_battle(uint64_t actor);
 static int g_target_misses;   // samples in a row the target was not drawn
 
 // One line every few seconds with every drawn unit and where the game put it:
@@ -525,8 +619,8 @@ static void hero_log_units(void) {
         char nm[24] = "";
         hero_rd(g_units[i].actor + DD_HERO_NAME, nm, sizeof nm);
         nm[sizeof nm - 1] = 0;
-        float bx0, by0, bx1, by1;
-        hero_unit_box(g_units[i].x, g_units[i].y, &bx0, &by0, &bx1, &by1);
+        float b[4] = {0}; hero_unit_bounds(g_units[i].actor, b);
+        float bx0=b[0], by0=b[1], bx1=b[2], by1=b[3];
         LOG("hero panel: unit %#llx%s \"%s\" at %.1f,%.1f box %.0f,%.0f-%.0f,%.0f",
             (unsigned long long)g_units[i].actor,
             g_units[i].actor == target ? " (target)" : "",
@@ -581,19 +675,9 @@ static void hero_strip(char *dst, size_t cap, const char *line) {
     dst[k] = 0;
 }
 
-// One sample of the original chain. Everything below runs on the game thread
-// with the game's own objects; no guest pointer outlives the call.
-//
-// Only the tray's combat group is passed (Instance+0x54 == 1; quirk effects
-// live in group 5, deathsdoor-style states in others — the game's own group
-// index). The tray functor's polarity split is deliberately not applied: it
-// drops whole stat kinds the tray icons render without text. What remains is
-// main+0xcd8540's own admission, aggregation and formatting.
-//
-// The chain is run twice with the game's own two line formats — w6=0
-// (name + amount through main+0xdebdc0) and w6=1 (duration through
-// main+0xdec330) — and the two rows of each aggregated effect are joined, so
-// a timed effect reads like the game's own tooltip: "<name> (剩余N回合)".
+// Collect tray-admitted effects and let the original aggregate/formatter
+// produce localized rows. Buff and debuff polarity are unioned; quirks are
+// explicitly outside the scope of this panel.
 static int g_hero_dbg;                   // one-shot diagnostics, first samples only
 static int g_hero_dbg_n = -1;            // from DM_DD_HERO_DEBUG, default 2
 static int hero_dbg_limit(void) {
@@ -658,20 +742,29 @@ static void hero_fmt_two(char *out, size_t cap, const char *tmpl, int amount, in
 #define DD_STAT_TABLE       0xb185e5e4ull
 #define DD_GROUP_TABLE      0xb186068cull
 static int hero_tray_predicate(const uint8_t *elem, uintptr_t base) {
-    uint32_t stat;
-    memcpy(&stat, elem + 8, sizeof stat);            // elem+0x08 = stat index
+    uint32_t stat, group;
+    memcpy(&stat, elem + 8, sizeof stat);
+    memcpy(&group, elem + DD_HERO_GROUP, sizeof group);
+    // Quirks are outside this panel's scope, even if they share a stat with
+    // a combat effect. Apply this before any stat-specific admission.
+    if (group == 5) return 0;
+    if (stat == 1) return 0; // mark has its own native tray title/duration
     uint8_t se[0x58];
     if (!hero_rd(base + DD_STAT_TABLE + (uint64_t)stat * 0x58, se, sizeof se))
         return 0;
-    if (se[0x56] & 1) return 1;                      // stat always shown
-    if (elem[0x1d2] & 1) return 1;                   // element flag
-    if (stat == 0x2c) return 1;                      // stat 44: always
-    if (se[0x45] & 1) return 1;
-    // The remaining check routes the effect to the buff or the debuff icon by
-    // sign; the panel unions both icons, so every effect that reaches here is
-    // decided by the group flag alone.
-    uint32_t group;
-    memcpy(&group, elem + 0x5c, sizeof group);
+    // cd8fd8 -> cd906c returns ZERO. The element flag at +1d2 only
+    // selects polarity, so it disappears when unioning buff and debuff.
+    // Recovery/heart-attack recovery use their own tray predicate cd8ed0,
+    // not the generic buff/debuff group flags (groups 18 and 19).
+    if ((group & ~1u) == 18) return !(se[0x45] & 1);
+    if (se[0x56] & 1) return 0;
+    // cd9030 sets w10=0 before both of these branches to cd9064.
+    if (stat == 0x2c) return 0;
+    // Dedicated DoT icons are outside the generic buff/debuff tooltip.
+    // Preserve their existing tray-template rows, without admitting every
+    // other stat that the generic tooltip excludes.
+    if ((se[0x45] & 1) && stat != 4 && stat != 5 &&
+        stat != 34 && stat != 35 && stat != 36) return 0;
     uint8_t gflag;
     if (!hero_rd(base + DD_GROUP_TABLE + (uint64_t)group * 0x4c + 0x48, &gflag, 1))
         return 0;
@@ -680,20 +773,23 @@ static int hero_tray_predicate(const uint8_t *elem, uintptr_t base) {
 
 static void hero_original_lines(uintptr_t base, uint64_t actor,
                                 uint64_t vbegin, uint64_t vend,
-                                dd_hero_snapshot_t *s) {
+                                dd_hero_snapshot_t *s, int recovery_only) {
     // Buff::Instance* = raw element + 8, exactly what the game collects at
     // main+0xcd4080 / 0xcd7398. The tray's polarity functor is not applied:
     // it splits effects into the 0xd/0xe icons and drops whole stat kinds.
     // The panel instead runs the game's own aggregate + per-row formatter and
     // keeps every combat effect, so a row the tray icons render without text
     // (stat id 5, "damage next action") still shows its game-written line.
-    void *inst[DD_HERO_MAX_BUFFS];
+    void *inst[4096]; // validated vector bound; aggregate before limiting output
     size_t n = 0;
     int dbg = g_hero_dbg < hero_dbg_limit();
-    for (uint64_t e = vbegin; e + DD_HERO_ELEM_STEP <= vend && n < DD_HERO_MAX_BUFFS;
+    for (uint64_t e = vbegin; e + DD_HERO_ELEM_STEP <= vend;
          e += DD_HERO_ELEM_STEP) {
         uint8_t raw[DD_HERO_ELEM_STEP];
         if (!hero_rd(e, raw, sizeof raw)) return;   // vector changed under us
+        uint32_t group;
+        memcpy(&group, raw + DD_HERO_GROUP, 4);
+        if (((group & ~1u) == 18) != recovery_only) continue;
         if (!hero_tray_predicate(raw, base)) continue;
         inst[n++] = (void *)(uintptr_t)(e + 8);
     }
@@ -708,7 +804,8 @@ static void hero_original_lines(uintptr_t base, uint64_t actor,
     memcpy(&has_raid, (void *)(uintptr_t)(vt + 0x20), sizeof has_raid);
     if (!has_raid) return;
     uint32_t w5 = has_raid((void *)(uintptr_t)actor) != 0;
-    s->has_battle = w5 != 0;
+    // w5 belongs only to the original formatter; it must not overwrite
+    // the independent target lifetime/HP visibility result (monsters return 0).
 
     dd_aggregate_fn aggregate = (dd_aggregate_fn)(base + DD_ORC_AGGREGATE);
     dd_line_fn line_full = (dd_line_fn)(base + DD_ORC_LINE_FULL);
@@ -790,7 +887,17 @@ static void hero_original_lines(uintptr_t base, uint64_t actor,
         }
         if (dup) continue;
         if (dbg) LOG("hero panel: row[%zu] = \"%s\"", i, out->line);
-        out->negative = strchr(out->line, '-') != NULL;   // display colour only
+        // Polarity comes from the stat table, not a '-' in localized text
+        // (reduced stress/damage received can be beneficial).
+        uint32_t row_stat; float row_amount; uint8_t se[0x58];
+        memcpy(&row_stat, row, 4);
+        memcpy(&row_amount, (uint8_t *)row + 0x48, 4);
+        out->negative = 0;
+        if (hero_rd(base + DD_STAT_TABLE + (uint64_t)row_stat * 0x58, se, sizeof se)) {
+            int positive = se[0x50] ? row_amount > 0 : row_amount < 0;
+            if (((uint8_t *)row)[0x1ca] & 1) positive = 1;
+            out->negative = row_amount != 0 && !positive;
+        }
         s->buff_count++;
     }
 
@@ -815,126 +922,6 @@ static void hero_original_lines(uintptr_t base, uint64_t actor,
     }
 }
 
-// Hero name and bars, from the same Actor the buff chain runs on.
-//   +0x8            the localized hero name, a C string the game keeps there
-//   +0x80 / +0x1274 / +0xab8   current HP, current stress, stress cap (floats;
-//                   verified against the on-screen bars of three heroes with
-//                   different values)
-//   property bag    "heroClass" -> length-prefixed class id. Where the bag
-//                   nodes sit is session-dependent (see hero_bag_scan_tick);
-//                   the budgeted, name-anchored scan keeps them found. The
-//                   localized class name comes from the game's own lookup with
-//                   the key shape the game itself uses at roster load. The max
-//                   HP is not stored in the Actor at all (the game computes it
-//                   from the class config plus modifiers), so the panel shows
-//                   the current HP only.
-// The value after the key: the node padding varies between instances (a plain
-// u32 length on one hero, a stray byte first on another), so accept the first
-// identifier-shaped run and let the caller's whitelist decide.
-static void hero_bag_id(const uint8_t *buf, size_t cap, size_t key_len,
-                        char *out, size_t out_cap);
-
-// The anchor test: this hero's name string (as a property-bag VALUE — the
-// Actor's own +0x8 name field does not count) sits within 0x2000 bytes before
-// the node. This is what binds a bag node to its hero when the bags of
-// different heroes interleave in one allocator region.
-static int hero_bag_anchored(uint64_t actor, uint64_t node, const char *name,
-                             size_t nlen) {
-    uint64_t from = node > actor + 0x2000 ? node - 0x2000 : actor;
-    uint8_t chk[0x2008];
-    size_t cap = (size_t)(node - from) + 8;
-    if (cap > sizeof chk) cap = sizeof chk;
-    if (!hero_rd(from, chk, cap)) return 0;
-    for (size_t j = 0; j + nlen <= cap; j++) {
-        if (memcmp(chk + j, name, nlen) != 0) continue;
-        if (from + j == actor + DD_HERO_NAME) continue;   // the Actor's own field
-        return 1;
-    }
-    return 0;
-}
-
-// The property-bag record scan, budgeted and name-anchored. The bag nodes
-// drift with the session's allocator layout — observed +0x2835..+0x2954 from
-// the Actor in one session and beyond 0x40000 (a different vm region) in
-// another. Guards:
-//   - budget: at most 12 windows (≈28 KB) per tick, spread over frames — an
-//     earlier version scanned megabytes inside the frame a sheet opened and
-//     froze the game, and a second one ran the anchor test on EVERY byte
-//     offset (2 mincore syscalls each, thousands per window) which stalled
-//     every frame the scan was alive;
-//   - anchor: a node is only accepted when THIS hero's name string (as a bag
-//     value — not the Actor's own +0x8 field) sits within 0x2000 bytes before
-//     it, which is what binds a node to its hero;
-//   - gate: the scan runs only while the hero's stress can plausibly reach
-//     the overstress threshold (≥ 60) — at low stress there is nothing to
-//     find, so an unstressed party costs nothing.
-// The window grows across passes (0x20000, 0x40000, 0x80000). The scan fills
-// the affliction-node cache for the current hero.
-static struct {
-    char name[DD_HERO_STR_MAX];   // the hero the scan state belongs to
-    uint64_t aff_node;
-    uint64_t cursor;              // next window offset to scan (or retry stamp)
-    int pass;                     // 0..2 -> window 0x20000 << pass
-    int done;                     // the scan reached the window's end
-} g_bag;
-
-static void hero_bag_scan_restart(void) {
-    g_bag.cursor = 0;
-    g_bag.pass = 0;
-    g_bag.done = 0;
-}
-
-static void hero_bag_scan_tick(uint64_t actor, const char *name, int dbg) {
-    if (strcmp(name, g_bag.name) != 0) {   // a different hero: restart the state
-        snprintf(g_bag.name, sizeof g_bag.name, "%s", name);
-        g_bag.aff_node = 0;
-        hero_bag_scan_restart();
-    }
-    if (g_bag.done) {
-        // The node holds: nothing to look for. Otherwise re-sweep every 15 s —
-        // the game can materialize the bag later (opening the hero's own sheet
-        // is one such moment).
-        if (g_bag.aff_node || dm_touch_now_ns() < g_bag.cursor)
-            return;
-        hero_bag_scan_restart();
-        g_bag.cursor = dm_touch_now_ns() + 15000000000ull;
-        g_bag.done = 1;
-        return;
-    }
-    uint64_t extent = actor + (0x20000ull << g_bag.pass);
-    size_t nlen = strlen(name) + 1;
-    if (nlen > 16) nlen = 15;   // long names anchor by their first 15 bytes
-    int budget = 12;
-    while (budget-- > 0) {
-        if (g_bag.cursor + 0x900 > extent) {   // this pass is over
-            if (g_bag.pass < 2) { g_bag.pass++; g_bag.cursor = 0; }
-            else {
-                g_bag.done = 1;
-                g_bag.cursor = dm_touch_now_ns() + 15000000000ull;   // re-sweep stamp
-            }
-            return;
-        }
-        uint8_t win[0x900];
-        if (hero_rd(actor + g_bag.cursor, win, sizeof win)) {
-            for (size_t j = 0; j + 26 <= sizeof win; j++) {
-                // key bytes first, and only then the (costly) anchor test —
-                // the anchor on every byte offset was a per-frame stall
-                if (memcmp(win + j, DD_AFFLICTION_KEY,
-                           sizeof DD_AFFLICTION_KEY) != 0)
-                    continue;
-                uint64_t node = actor + g_bag.cursor + j;
-                if (!hero_bag_anchored(actor, node, name, nlen)) continue;
-                g_bag.aff_node = node;
-                if (dbg) LOG("hero panel: bag scan affliction node @ +0x%llx",
-                             (unsigned long long)(node - actor));
-                break;
-            }
-        }
-        g_bag.cursor += 0x700;
-        if (g_bag.aff_node) return;   // found: the sweep is done
-    }
-}
-
 // "This unit has a raid/combat object" — the game's own question (the vtable
 // slot the tooltip chain calls at main+0xcd7458). It decides whether the panel
 // shows the health and stress rows, so it is asked for every unit, not only for
@@ -943,7 +930,10 @@ static int hero_has_battle(uint64_t actor) {
     uint64_t vt = 0;
     if (!hero_rd(actor, &vt, 8) || !vt) return 0;
     void *(*has_raid)(void *) = NULL;
-    memcpy(&has_raid, (void *)(uintptr_t)(vt + 0x20), sizeof has_raid);
+    // Hero::raid is slot +20; Monster::monster is slot +10. The
+    // monster's +20 is the game's null hero accessor, not scene loss.
+    uint64_t slot = hero_target_type(g_base_cache, actor) == DD_INSPECT_ENEMY ? 0x10 : 0x20;
+    memcpy(&has_raid, (void *)(uintptr_t)(vt + slot), sizeof has_raid);
     return has_raid && has_raid((void *)(uintptr_t)actor) != 0;
 }
 
@@ -959,21 +949,22 @@ static void hero_identity(uintptr_t base, uint64_t actor, int dbg, dd_hero_snaps
     if (hero_rd(actor + DD_HERO_HP, &f, 4) && f == f && f >= 0 && f < 1e5f) {
         s->has_hp = 1; s->hp = (int)(f + 0.5f);
     }
-    if (hero_rd(actor + DD_HERO_STRESS, &f, 4) && f == f && f >= 0 && f < 1e5f) {
+    if (s->target_type == DD_INSPECT_HERO && hero_rd(actor + DD_HERO_STRESS, &f, 4) && f == f && f >= 0 && f < 1e5f) {
         s->has_stress = 1; s->stress = (int)(f + 0.5f);
     }
     if (hero_rd(actor + DD_HERO_STRESS_MAX, &f, 4) && f == f && f > 0 && f < 1e5f) {
         s->stress_max = (int)(f + 0.5f);
     }
     s->has_battle = hero_has_battle(actor);
+    for (int i = 0; i < DD_UNIT_MAX; i++) {
+        if (g_bars[i].actor != actor ||
+            atomic_load(&g_unit_stamp) - g_bars[i].stamp > DD_UNIT_STALE) continue;
+        s->hp = (int)ceilf(g_bars[i].hp); s->has_hp = 1;
+        s->hp_max = (int)ceilf(g_bars[i].max); s->has_hp_max = 1;
+        break;
+    }
 
-    // The overstress state's node lives in the hero's property map. Where
-    // those nodes sit is session-dependent — see hero_bag_scan_tick. The scan
-    // runs only while the stress can plausibly reach the threshold (≥ 60), so
-    // an unstressed party costs nothing; the name/class rows were removed by
-    // request, and with them the class scan and its per-sample lookup.
-    if (s->name[0] && s->has_stress && s->stress >= 60)
-        hero_bag_scan_tick(actor, s->name, dbg);
+
 }
 
 // ---- Special states (read from their own structures, never the Buff chain) ----
@@ -1020,101 +1011,105 @@ static void hero_block_line(uintptr_t base, uint64_t actor, int dbg, dd_hero_sna
     hero_strip(s->block_line, sizeof s->block_line, line);
 }
 
-// (b) The overstress state. Afflictions (暴虐, 自私, ...) are not buffs: they
-// are the hero's property-bag string "affliction_type_id" (empty while the
-// hero is fine) — the same bag the class id comes from, with the same drifting
-// node placement. The Chinese name is the game's own lookup of
-// "str_affliction_name_<id>" / "str_virtue_name_<id>", the key shapes the game
-// itself composes (both verbatim in the main image). The id is validated
-// against the romfs trait library's own lists, so the lookup only ever sees
-// keys the game itself displays (a miss would enter the crash-prone fallback).
-// The found bag node address is cached per hero and re-verified cheaply each
-// sample: a state change shows up live, and a moved node costs one rescan.
-static const char *const hero_affliction_ids[] = {
-    "abusive", "depressed", "fearful", "irrational", "masochistic", "paranoid",
-    "selfish", 0};
-static const char *const hero_virtue_ids[] = {
-    "courageous", "focused", "powerful", "stalwart", "vigorous", 0};
-
-// The value after the key: the node padding varies between instances (a plain
-// u32 length on one hero, a stray byte first on another), so accept the first
-// identifier-shaped run and let the caller's whitelist decide.
-static void hero_bag_id(const uint8_t *buf, size_t cap, size_t key_len,
-                        char *out, size_t out_cap) {
-    out[0] = 0;
-    for (size_t t = key_len; t + 4 <= cap; t++) {
-        if (buf[t] < 'a' || buf[t] > 'z') continue;
-        size_t e = t;
-        while (e < cap && e - t < 24 &&
-               ((buf[e] >= 'a' && buf[e] <= 'z') || buf[e] == '_'))
-            e++;
-        if (e - t >= 3) {
-            size_t n = e - t < out_cap - 1 ? e - t : out_cap - 1;
-            memcpy(out, buf + t, n);
-            out[n] = 0;
-            return;
-        }
-        t = e;
-    }
+// Tray case 0x10: each survived death blow contributes the game's configured
+// permanent resistance loss. Actor+1268 is a u32 counter, not a float.
+static void hero_deathblow_line(uintptr_t base, uint64_t actor, dd_hero_snapshot_t *s) {
+    if (s->target_type != DD_INSPECT_HERO) return;
+    uint32_t count = 0; float factor = 0;
+    if (!hero_rd(actor + 0x1268, &count, 4) || !count ||
+        !hero_rd(base + 0xb1a80d4c, &factor, 4) || !(factor > 0 && factor <= 1)) return;
+    float value = (float)count * factor * 100.0f;
+    if (!(value >= 1 && value <= 100)) return;
+    dd_loc_fn lookup = (dd_loc_fn)(base + DD_ORC_LOOKUP);
+    dd_loc_ret r = lookup("tray_icon_tooltip_death_blow_resistance_permanent_debuff");
+    if (!r.ptr || !hero_page_ok((uintptr_t)r.ptr)) return;
+    dd_fmt_desc d = { r.ptr, (uint32_t)r.packed, (uint32_t)(r.packed >> 32) };
+    char line[DD_HERO_LINE_MAX] = {0};
+    ((dd_fmt_fn)(base + DD_FMT))(&d, line, sizeof line, (uint32_t)value, 0);
+    hero_strip(s->deathblow_line, sizeof s->deathblow_line, line);
 }
 
-static int hero_id_in(const char *const *list, const char *id) {
-    for (int i = 0; list[i]; i++)
-        if (!strcmp(list[i], id)) return 1;
+// Native tray cases 4/5 (cd4468/cd48d4): Actor stores stable trait hashes.
+// Resolve against the game's loaded trait library, not nearby save/property nodes.
+// Each 0x100-byte record starts with the identifier and has its hash at +0x40.
+static int hero_trait_id(uintptr_t base, uint32_t hash, char id[64]) {
+    uint64_t table = 0, begin = 0, end = 0; uint8_t alternate = 0;
+    if (!hero_rd(base+0xb1a57220, &table, 8) || !table ||
+        !hero_rd(base+0xb1a8f61b, &alternate, 1)) return 0;
+    uint64_t vector = table + (alternate ? 0x18 : 0);
+    if (!hero_rd(vector, &begin, 8) || !hero_rd(vector+8, &end, 8) ||
+        end < begin || (end-begin)%0x100 || (end-begin)/0x100 > 256) return 0;
+    for (uint64_t entry=begin; entry<end; entry+=0x100) {
+        uint32_t candidate;
+        if (!hero_rd(entry+0x40, &candidate, 4)) return 0;
+        if (candidate != hash) continue;
+        if (!hero_rd(entry, id, 64)) return 0;
+        size_t n = strnlen(id,64);
+        if (!n || n == 64) return 0;
+        for (size_t i=0;i<n;i++) if (!((id[i]>='a' && id[i]<='z') || id[i]=='_')) return 0;
+        return 1;
+    }
     return 0;
 }
 
 static void hero_affliction_line(uintptr_t base, uint64_t actor, int dbg, dd_hero_snapshot_t *s) {
-    (void)actor;
-    static char cached_id[32], cached_line[DD_HERO_STR_MAX];
-    const size_t key_len = sizeof DD_AFFLICTION_KEY;   // includes the NUL
-    uint8_t buf[0x40];
-    // The node address comes from the shared bag scan (g_bag.aff_node), bound
-    // to this hero by the name anchor; it is re-verified cheaply each sample,
-    // so a state change shows up live.
-    uint64_t node = !strcmp(s->name, g_bag.name) ? g_bag.aff_node : 0;
-    int node_ok = node &&
-        hero_rd(node, buf, sizeof buf) &&
-        !memcmp(buf, DD_AFFLICTION_KEY, key_len);
-    if (node && !node_ok) {   // the node moved or was freed: re-scan
-        g_bag.aff_node = 0;
-        hero_bag_scan_restart();
-    }
-    if (!node_ok) {
-        cached_id[0] = 0; cached_line[0] = 0;
+    const char *shapes[] = {"str_affliction_name_%s", "str_virtue_name_%s"};
+    for (int kind=0;kind<2;kind++) {
+        uint32_t hash; char id[64], key[96];
+        if (!hero_rd(actor+0x11b8+4*kind,&hash,4) || !hero_trait_id(base,hash,id)) continue;
+        snprintf(key,sizeof key,shapes[kind],id);
+        dd_loc_ret text = ((dd_loc_fn)(base+DD_ORC_LOOKUP))(key);
+        if (text.ptr && hero_page_ok((uintptr_t)text.ptr))
+            hero_strip(s->affliction_line,sizeof s->affliction_line,text.ptr);
+        if (dbg) LOG("hero panel: native trait %s",id);
         return;
     }
-    char id[32];
-    hero_bag_id(buf, sizeof buf, key_len, id, sizeof id);
-    if (strcmp(id, cached_id) == 0) {   // unchanged since the last sample
-        snprintf(s->affliction_line, sizeof s->affliction_line, "%s", cached_line);
-        return;
+}
+
+// Mark is tray case 0xc: raw stat 1, longest remaining turns (b3d390),
+// title from duration enum 9 (after_turn), or 0 (combat_end) for no turn count.
+static int hero_mark_turns(uint64_t begin, uint64_t end, int *turns) {
+    if (end < begin || (end-begin)%DD_HERO_ELEM_STEP ||
+        (end-begin)/DD_HERO_ELEM_STEP > 4096) return 0;
+    int found=0, permanent=0; *turns=0;
+    for (uint64_t e=begin;e<end;e+=DD_HERO_ELEM_STEP) {
+        uint32_t stat,group,duration; int32_t remaining;
+        if (!hero_rd(e+8,&stat,4) || !hero_rd(e+DD_HERO_GROUP,&group,4)) return 0;
+        if (stat!=1 || group==5) continue;
+        if (!hero_rd(e+0x54,&remaining,4) || !hero_rd(e+0x58,&duration,4)) return 0;
+        found=1;
+        if (duration==0) permanent=1;
+        if (remaining>*turns) *turns=remaining;
     }
-    snprintf(cached_id, sizeof cached_id, "%s", id);
-    cached_line[0] = 0;
-    if (dbg) LOG("hero panel: affliction id = \"%s\"", id);
-    if (id[0]) {
-        const char *shape = NULL;
-        if (hero_id_in(hero_affliction_ids, id)) shape = "str_affliction_name_%s";
-        else if (hero_id_in(hero_virtue_ids, id)) shape = "str_virtue_name_%s";
-        if (shape) {
-            dd_loc_fn lookup = (dd_loc_fn)(base + DD_ORC_LOOKUP);
-            char key[64];
-            snprintf(key, sizeof key, shape, id);
-            if (lookup) {
-                const char *r = (const char *)lookup(key).ptr;
-                if (r && hero_page_ok((uintptr_t)r)) {
-                    char text[DD_HERO_STR_MAX];
-                    size_t k = 0;
-                    while (k + 1 < sizeof text && r[k]) { text[k] = r[k]; k++; }
-                    text[k] = 0;
-                    if (text[0]) snprintf(cached_line, sizeof cached_line, "%s", text);
-                }
-            }
+    if (permanent) *turns=-1;
+    return found;
+}
+
+static void hero_special_lines(uintptr_t base, uint64_t actor, uint64_t begin,
+                               uint64_t end, dd_hero_snapshot_t *s) {
+    dd_loc_fn lookup=(dd_loc_fn)(base+DD_ORC_LOOKUP);
+    if (s->target_type==DD_INSPECT_HERO) {
+        float hp;
+        if (hero_rd(actor+DD_HERO_HP,&hp,4) && isfinite(hp) && hp<=0) {
+            dd_loc_ret text=lookup("tray_icon_tooltip_deathsdoor_title");
+            if (text.ptr && hero_page_ok((uintptr_t)text.ptr))
+                hero_strip(s->deathsdoor_line,sizeof s->deathsdoor_line,text.ptr);
         }
-        // An id outside the game's own lists is never shown (never an internal id).
     }
-    snprintf(s->affliction_line, sizeof s->affliction_line, "%s", cached_line);
+    int turns;
+    if (hero_mark_turns(begin,end,&turns)) {
+        char tag[64],key[96];
+        if (!hero_rd(base+0xb18610a4+(turns<0 ? 0 : 9)*0x48,tag,sizeof tag)) return;
+        tag[63]=0;
+        if (!tag[0]) return;
+        snprintf(key,sizeof key,"tray_icon_tooltip_tag_title_%s",tag);
+        dd_loc_ret text=lookup(key);
+        if (!text.ptr || !hero_page_ok((uintptr_t)text.ptr)) return;
+        dd_fmt_desc d={text.ptr,(uint32_t)text.packed,(uint32_t)(text.packed>>32)};
+        char line[DD_HERO_LINE_MAX]={0};
+        ((dd_fmt_fn)(base+DD_FMT))(&d,line,sizeof line,turns<0 ? 0 : turns,0);
+        hero_strip(s->mark_line,sizeof s->mark_line,line);
+    }
 }
 
 void dd_hero_frame_tick(void) {
@@ -1135,16 +1130,6 @@ void dd_hero_frame_tick(void) {
     atomic_fetch_add_explicit(&g_unit_stamp, 1, memory_order_relaxed);
     hero_tune_tick();
     if (g_base_cache) {
-        // Which class is a hero on this screen: the game's own acting hero. It
-        // is used as a CLASS fingerprint only — never as the inspected unit.
-        uint64_t s0 = 0, a0 = 0;
-        if (hero_rd(g_base_cache + DD_HERO_SINGLETON, &s0, 8) && s0 &&
-            hero_rd(s0 + DD_HERO_SINGLETON_ACTOR, &a0, 8) && a0) {
-            uint64_t vt = 0;
-            if (hero_rd(a0, &vt, 8) && vt >= g_base_cache &&
-                vt < g_base_cache + g_size_cache)
-                atomic_store_explicit(&g_hero_vt, vt, memory_order_relaxed);
-        }
         hero_tap_track();
         if (g_tap_x >= 0) {
             float tx = g_tap_x, ty = g_tap_y;
@@ -1155,6 +1140,7 @@ void dd_hero_frame_tick(void) {
                 LOG("hero panel: tap at %.0f,%.0f landed on no unit", tx, ty);
         }
         hero_unit_prune();
+        hero_follow_tick();
     }
 
     if (++g_hero_tick % DD_HERO_SAMPLE_EVERY) return;
@@ -1192,9 +1178,7 @@ void dd_hero_frame_tick(void) {
             actor = 0;
             hero_note("inspection target destroyed");
         } else {   // the scene check: the raid/combat object must still exist
-            void *(*has_raid)(void *) = NULL;
-            memcpy(&has_raid, (void *)(uintptr_t)(vt + 0x20), sizeof has_raid);
-            if (!has_raid || !has_raid((void *)(uintptr_t)actor)) {
+            if (!hero_has_battle(actor)) {
                 atomic_store_explicit(&g_inspect_actor, 0, memory_order_release);
                 actor = 0;
                 hero_note("inspection target left the raid");
@@ -1248,30 +1232,22 @@ void dd_hero_frame_tick(void) {
     dd_hero_snapshot_t s;
     memset(&s, 0, sizeof s);
     s.valid = 1;
-    s.target_type = DD_INSPECT_HERO;
+    s.target_type = hero_target_type(base, actor);
     s.target_actor = actor;
     int dbg = g_hero_dbg < hero_dbg_limit();
     hero_identity(base, actor, dbg, &s);
-    if (begin != end) hero_original_lines(base, actor, begin, end, &s);
-    hero_block_line(base, actor, dbg, &s);
-    hero_affliction_line(base, actor, dbg, &s);
-
-    // Where the unit is this frame: the game's own position for it, turned into
-    // a picture-relative anchor and click box. Both numbers the front ends use
-    // come from here and from nowhere else.
-    float ux, uy;
-    if (hero_unit_at(actor, &ux, &uy)) {
-        float x0, y0, x1, y1;
-        hero_unit_box(ux, uy, &x0, &y0, &x1, &y1);
-        s.anchor_valid = 1;
-        s.anchor_x = (x0 + x1) * 0.5f;
-        s.anchor_y = y0 - g_panel_gap / DD_UI_H;
-        s.body_x0 = x0; s.body_y0 = y0; s.body_x1 = x1; s.body_y1 = y1;
-        if (s.anchor_x < 0) s.anchor_x = 0;
-        if (s.anchor_x > 1) s.anchor_x = 1;
-        if (s.anchor_y < 0) s.anchor_y = 0;
-        if (s.anchor_y > 1) s.anchor_y = 1;
+    if (begin != end) {
+        // The dedicated recovery icon's effects must not be hidden behind
+        // ordinary buffs in the compact panel's first rows.
+        hero_original_lines(base, actor, begin, end, &s, 1);
+        hero_original_lines(base, actor, begin, end, &s, 0);
     }
+    hero_block_line(base, actor, dbg, &s);
+    hero_deathblow_line(base, actor, &s);
+    hero_special_lines(base, actor, begin, end, &s);
+    if (s.target_type == DD_INSPECT_HERO) hero_affliction_line(base, actor, dbg, &s);
+
+    hero_anchor(&s);
     {   // Which Actor did the tooltip builder describe this frame?
         uint64_t ga = atomic_load_explicit(&g_gate_actor, memory_order_relaxed);
         static uint64_t last_gate;
@@ -1281,6 +1257,8 @@ void dd_hero_frame_tick(void) {
                 (unsigned long long)actor);
         }
     }
+    if (dbg) LOG("hero panel: target type=%d hp=%d/%d max_valid=%d stress_valid=%d rows=%d",
+        s.target_type, s.hp, s.hp_max, s.has_hp_max, s.has_stress, s.buff_count);
     hero_note("snapshot valid");
     hero_publish(&s);
 }

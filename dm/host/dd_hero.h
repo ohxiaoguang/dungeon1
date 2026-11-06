@@ -13,9 +13,7 @@
 #define DD_HERO_LINE_MAX  256           // the game's own line buffer is 0x100
 #define DD_HERO_MAX_BUFFS 32
 
-// What the panel is looking at. Phase 1 only ever produces DD_INSPECT_HERO, but
-// the snapshot, the collector's target slot and both front ends are written
-// against this type so an enemy target can be added without a second panel.
+// One inspected hero or ordinary enemy, rendered by the same panel.
 typedef enum {
     DD_INSPECT_NONE = 0,
     DD_INSPECT_HERO = 1,
@@ -33,7 +31,7 @@ typedef struct {
     int valid;                    // 1 only when a live dungeon Actor was verified
     // ---- The inspected object (the last one the player tapped) ----
     // The panel is anchored to the GAME's own per-unit screen position, read
-    // from the sprite animator draw (see hle_dd_hero.c). All coordinates are
+    // from native skeleton bounds and the raid camera. All coordinates are
     // normalized over the game's picture (0..1, origin top left), so a front end
     // only maps them through its own picture rectangle - no platform constants.
     int target_type;              // DdInspectTargetType
@@ -45,20 +43,18 @@ typedef struct {
     char class_name[DD_HERO_STR_MAX]; // localized class name (empty: see hle_dd_hero.c)
     char class_id[DD_HERO_STR_MAX];   // the Actor's raw class id, e.g. "jester"
     int has_battle;               // the game says a raid/combat object exists
+    int has_hp_max, hp_max;     // captured from the original health bar draw
     int has_hp, hp;               // current HP
     int has_stress, stress, stress_max;
     // Special states, each read from its own game structure (never through the
     // Buff filters). Empty string = the state is not present.
     char affliction_line[DD_HERO_STR_MAX]; // the overstress state's own name, e.g. "暴虐"
     char block_line[DD_HERO_LINE_MAX];     // the game's own block tooltip, e.g. "剩余1次护体隔挡"
+    char deathsdoor_line[DD_HERO_STR_MAX]; // current death's-door state
+    char mark_line[DD_HERO_LINE_MAX]; // native mark title and remaining turns
+    char deathblow_line[DD_HERO_LINE_MAX]; // permanent death-blow resistance loss
     int buff_count;
     dd_hero_buff_t buffs[DD_HERO_MAX_BUFFS];
-    // Enemy side (right of the picture). Reserved for phase 2: the same
-    // snapshot, panel and anchor are reused, but until an enemy target can be
-    // captured the UI never shows this side.
-    int enemy_valid;
-    int enemy_buff_count;
-    dd_hero_buff_t enemy_buffs[DD_HERO_MAX_BUFFS];
 } dd_hero_snapshot_t;
 
 // Thread-safe by-value copy. Safe to call from the UI/main thread at any time.

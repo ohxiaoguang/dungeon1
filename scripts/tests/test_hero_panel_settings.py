@@ -30,8 +30,8 @@ class HeroPanelSettings(unittest.TestCase):
 
     def test_labels_are_bilingual(self):
         cat = CATALOG.read_text()
-        self.assertIn('"Hero status panel": "英雄状态面板"', cat)
-        self.assertIn("Show the selected hero's live effects", cat)
+        self.assertIn('"Character status panel": "角色状态面板"', cat)
+        self.assertIn("Click a hero or enemy to show health", cat)
 
     def test_switch_is_in_advanced(self):
         src = LAUNCHER.read_text()
