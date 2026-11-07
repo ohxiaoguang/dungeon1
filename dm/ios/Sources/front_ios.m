@@ -56,6 +56,12 @@ static UILabel *front_ios_fps_label(void);
 - (void)follow;
 @end
 
+// Snapshot strings are UTF-8. NSString's printf %s conversion is not an
+// explicit UTF-8 decoder (and corrupts these Chinese state labels on iOS).
+static NSString *dd_status_text(const char *text) {
+    return text && text[0] ? ([NSString stringWithUTF8String:text] ?: @"") : @"";
+}
+
 @implementation DmHeroPanel
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
@@ -67,7 +73,7 @@ static UILabel *front_ios_fps_label(void);
         self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.16].CGColor;
         _body = [[UILabel alloc] initWithFrame:CGRectZero];
         _body.numberOfLines = 0;
-        _body.lineBreakMode = NSLineBreakByTruncatingTail;
+        _body.lineBreakMode = NSLineBreakByWordWrapping;
         _body.userInteractionEnabled = NO;
         _body.textColor = UIColor.whiteColor;
         [self addSubview:_body];
@@ -112,39 +118,60 @@ static UILabel *front_ios_fps_label(void);
     // virtuous, so one row covers both.
     const char *states[] = {s.deathsdoor_line, s.mark_line};
     for (int i=0;i<2;i++) if (states[i][0])
-        [a appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"%s\n",states[i]]
+        [a appendAttributedString:[[NSAttributedString alloc] initWithString:[dd_status_text(states[i]) stringByAppendingString:@"\n"]
             attributes:@{NSFontAttributeName:[UIFont systemFontOfSize:11],
             NSForegroundColorAttributeName:[UIColor colorWithRed:1 green:0.62 blue:0.45 alpha:1]}]];
     if (s.affliction_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
-        initWithString:[NSString stringWithFormat:@"%s\n", s.affliction_line]
+        initWithString:[dd_status_text(s.affliction_line) stringByAppendingString:@"\n"]
         attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
         NSForegroundColorAttributeName: [UIColor colorWithRed:1 green:0.42 blue:0.55 alpha:1]}]];
     if (s.block_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
-        initWithString:[NSString stringWithFormat:@"%s\n", s.block_line]
+        initWithString:[dd_status_text(s.block_line) stringByAppendingString:@"\n"]
         attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
         NSForegroundColorAttributeName: [UIColor colorWithRed:0.55 green:0.86 blue:1 alpha:1]}]];
     if (s.deathblow_line[0]) [a appendAttributedString:[[NSAttributedString alloc]
-        initWithString:[NSString stringWithFormat:@"%s\n", s.deathblow_line]
+        initWithString:[dd_status_text(s.deathblow_line) stringByAppendingString:@"\n"]
         attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
         NSForegroundColorAttributeName: [UIColor colorWithRed:1 green:0.62 blue:0.45 alpha:1]}]];
     int shown = n > 6 ? 6 : n;
+    // Group equal duration suffixes instead of repeating a long suffix on
+    // every stat. Keep each stat's original colour and every displayed value.
+    NSMutableArray<NSString *> *durations = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSMutableArray<NSAttributedString *> *> *groups = [NSMutableDictionary dictionary];
     for (int i = 0; i < shown; i++) {
         const dd_hero_buff_t *b = &s.buffs[i];
-        // The row IS the game's own line; the only thing added here is colour,
-        // taken from the sign the game itself printed.
-        NSString *line = b->line[0] ? [NSString stringWithUTF8String:b->line] : nil;
+        NSString *line = dd_status_text(b->line);
         if (!line.length) continue;
+        NSString *duration = @"";
+        NSRange open = [line rangeOfString:@"(" options:NSBackwardsSearch];
+        if (open.location == NSNotFound) open = [line rangeOfString:@"（" options:NSBackwardsSearch];
+        if (open.location != NSNotFound && ([line hasSuffix:@")"] || [line hasSuffix:@"）"])) {
+            duration = [line substringWithRange:NSMakeRange(open.location+1, line.length-open.location-2)];
+            line = [[line substringToIndex:open.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            duration = [duration stringByReplacingOccurrencesOfString:@"效果持续到任务结束" withString:@"至任务结束"];
+        }
+        if (!groups[duration]) { groups[duration] = [NSMutableArray array]; [durations addObject:duration]; }
         UIColor *c = b->negative ? [UIColor colorWithRed:1 green:0.62 blue:0.45 alpha:1]
-                    : (b->line[0] == '+' ? [UIColor colorWithRed:0.55 green:0.86 blue:1 alpha:1]
-                                         : UIColor.whiteColor);
-        [a appendAttributedString:[[NSAttributedString alloc]
-            initWithString:[NSString stringWithFormat:@"%@\n", line]
-            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
-            NSForegroundColorAttributeName: c}]];
+                    : (b->line[0] == '+' ? [UIColor colorWithRed:0.55 green:0.86 blue:1 alpha:1] : UIColor.whiteColor);
+        [groups[duration] addObject:[[NSAttributedString alloc] initWithString:line
+            attributes:@{NSFontAttributeName:[UIFont systemFontOfSize:11], NSForegroundColorAttributeName:c}]];
+    }
+    for (NSString *duration in durations) {
+        if (duration.length) [a appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[duration stringByAppendingString:@"："]
+            attributes:@{NSFontAttributeName:[UIFont systemFontOfSize:10],
+            NSForegroundColorAttributeName:[UIColor colorWithWhite:0.8 alpha:1]}]];
+        NSArray<NSAttributedString *> *rows = groups[duration];
+        for (NSUInteger i=0;i<rows.count;i++) {
+            if (i) [a appendAttributedString:[[NSAttributedString alloc] initWithString:@" · "
+                attributes:@{NSFontAttributeName:[UIFont systemFontOfSize:10], NSForegroundColorAttributeName:UIColor.grayColor}]];
+            [a appendAttributedString:rows[i]];
+        }
+        [a appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"]];
     }
     if (n > shown) {
         [a appendAttributedString:[[NSAttributedString alloc]
-            initWithString:[NSString stringWithFormat:@"+%d\n", n - shown]
+            initWithString:[NSString stringWithFormat:@"另有 %d 项效果\n", n - shown]
             attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:10],
             NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.5]}]];
     }
@@ -153,11 +180,16 @@ static UILabel *front_ios_fps_label(void);
             initWithString:@"—\n" attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11],
             NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.45]}]];
     }
+    if (a.length && [[a string] hasSuffix:@"\n"]) [a deleteCharactersInRange:NSMakeRange(a.length-1,1)];
+    NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
+    paragraph.lineBreakMode = NSLineBreakByWordWrapping;
+    paragraph.lineSpacing = 1;
+    [a addAttribute:NSParagraphStyleAttributeName value:paragraph range:NSMakeRange(0,a.length)];
     _body.attributedText = a;
     // Hang the box above the unit's anchor, inside the picture, and give it the
     // height its own rows need.
-    CGFloat maxW = MIN(pic.size.width * 0.42, 360);
-    CGSize need = [_body sizeThatFits:CGSizeMake(maxW, CGFLOAT_MAX)];
+    CGFloat maxW = MIN(pic.size.width * 0.46, 360);
+    CGSize need = [_body sizeThatFits:CGSizeMake(MAX(1, maxW - 16), CGFLOAT_MAX)];
     CGFloat w = MIN(maxW, ceil(need.width) + 16), h = ceil(need.height) + 12;
     CGFloat ax = pic.origin.x + s.anchor_x * pic.size.width;
     CGFloat ay = pic.origin.y + s.anchor_y * pic.size.height;

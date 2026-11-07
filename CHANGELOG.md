@@ -330,3 +330,11 @@ Summary of what this round changed, in the order a player meets it:
   validation covers ordinary unit clicks, camera/formation changes, recovery and
   persistent affliction; specific mark/death's-door encounters and iOS touch
   remain outside this runtime acceptance.
+
+## iOS status panel text — 2026-11-07
+
+- Decode every special-state label explicitly as UTF-8, matching ordinary buff
+  rows, instead of passing Chinese bytes through NSString's `%s` conversion.
+- Group displayed effects by duration, shorten repeated end-of-quest wording,
+  wrap at the label's actual padded width and remove the trailing blank line.
+- User requested packaging without additional tests; phone acceptance is pending.
